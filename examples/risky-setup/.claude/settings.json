@@ -1,0 +1,6 @@
+{
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": ["mcp__github", "mcp__filesystem", "Bash(git status)"]
+  }
+}

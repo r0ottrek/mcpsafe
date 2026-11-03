@@ -1,0 +1,42 @@
+{
+  "name": "mcpsafe",
+  "version": "1.0.0",
+  "description": "One-command security audit for MCP servers and AI agent configs (Claude, Cursor, VS Code, Windsurf, Gemini CLI). Finds hidden instructions, plaintext secrets, unpinned packages and over-privileged tools.",
+  "type": "module",
+  "bin": {
+    "mcpsafe": "bin/mcpsafe.js"
+  },
+  "main": "src/scan.js",
+  "exports": {
+    ".": "./src/scan.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "demo": "node bin/mcpsafe.js --no-home examples/risky-setup --tools examples/risky-setup/tools.json"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "audit",
+    "scanner",
+    "ai-agents",
+    "claude",
+    "cursor",
+    "prompt-injection",
+    "tool-poisoning",
+    "sarif"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/r0ottrek/mcpsafe.git"
+  },
+  "license": "MIT"
+}

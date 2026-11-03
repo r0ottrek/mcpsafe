@@ -1,0 +1,78 @@
+name: 'mcpsafe: MCP security scan'
+description: 'Audit MCP server and AI agent configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json, ...) for secrets, unpinned packages and risky permissions.'
+author: 'r0ottrek'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  path:
+    description: 'Folder or config file to scan.'
+    default: '.'
+  fail-on:
+    description: 'Fail the job if any finding is at or above this severity: critical, high, medium, low. Use "none" to never fail on findings.'
+    default: 'high'
+  min-score:
+    description: 'Fail the job if the score is below this number (0-100).'
+    default: ''
+  ignore:
+    description: 'Comma-separated rule IDs to skip, e.g. MCS003,MCS004.'
+    default: ''
+  sarif:
+    description: 'Where to write the SARIF file (upload it with github/codeql-action/upload-sarif).'
+    default: 'mcpsafe.sarif'
+  html:
+    description: 'Optional path for an HTML report.'
+    default: ''
+
+outputs:
+  score:
+    description: 'Security score from 0 to 100.'
+    value: ${{ steps.scan.outputs.score }}
+  grade:
+    description: 'Letter grade, A to F.'
+    value: ${{ steps.scan.outputs.grade }}
+  findings:
+    description: 'Number of findings.'
+    value: ${{ steps.scan.outputs.findings }}
+  sarif:
+    description: 'Path to the SARIF file.'
+    value: ${{ inputs.sarif }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: scan
+      shell: bash
+      env:
+        MCPSAFE_PATH: ${{ inputs.path }}
+        MCPSAFE_FAIL_ON: ${{ inputs.fail-on }}
+        MCPSAFE_MIN_SCORE: ${{ inputs.min-score }}
+        MCPSAFE_IGNORE: ${{ inputs.ignore }}
+        MCPSAFE_SARIF: ${{ inputs.sarif }}
+        MCPSAFE_HTML: ${{ inputs.html }}
+        FORCE_COLOR: '1'
+      run: |
+        bin="$GITHUB_ACTION_PATH/bin/mcpsafe.js"
+        args=(--no-home "$MCPSAFE_PATH" --sarif "$MCPSAFE_SARIF" --markdown "$GITHUB_STEP_SUMMARY")
+        [ -n "$MCPSAFE_IGNORE" ] && args+=(--ignore "$MCPSAFE_IGNORE")
+        [ -n "$MCPSAFE_HTML" ] && args+=(--html "$MCPSAFE_HTML")
+        [ -n "$MCPSAFE_MIN_SCORE" ] && args+=(--min-score "$MCPSAFE_MIN_SCORE")
+        [ -n "$MCPSAFE_FAIL_ON" ] && [ "$MCPSAFE_FAIL_ON" != "none" ] && args+=(--fail-on "$MCPSAFE_FAIL_ON")
+
+        json_args=(--no-home "$MCPSAFE_PATH" --json)
+        [ -n "$MCPSAFE_IGNORE" ] && json_args+=(--ignore "$MCPSAFE_IGNORE")
+        node "$bin" "${json_args[@]}" > "$RUNNER_TEMP/mcpsafe.json" || true
+        node -e '
+          const r = require(process.argv[1]);
+          const out = [`score=${r.score.value}`, `grade=${r.score.grade}`, `findings=${r.findings.length}`].join("\n");
+          require("fs").appendFileSync(process.env.GITHUB_OUTPUT, out + "\n");
+          for (const f of r.findings) {
+            const lvl = ["critical", "high"].includes(f.severity) ? "error" : f.severity === "medium" ? "warning" : "notice";
+            const file = require("path").relative(process.cwd(), f.file || "");
+            const msg = `${f.server ? "[" + f.server + "] " : ""}${f.message}`.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+            console.log(`::${lvl} file=${file},title=${f.id} ${f.title}::${msg}`);
+          }
+        ' "$RUNNER_TEMP/mcpsafe.json"
+
+        node "$bin" "${args[@]}"

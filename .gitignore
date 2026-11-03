@@ -1,0 +1,4 @@
+node_modules/
+*.sarif
+mcpsafe-report.html
+.DS_Store

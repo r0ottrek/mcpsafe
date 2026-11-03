@@ -1,0 +1,21 @@
+{
+  // Cursor allows comments in this file
+  "mcpServers": {
+    "commander": {
+      "command": "npx",
+      "args": ["-y", "@wonderwhy-er/desktop-commander"],
+      "autoApprove": ["execute_command", "write_file"]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "weather": {
+      "url": "http://weather-tools.dev/mcp?api_key=wk_93kd8Fj2LqP0zX7v",
+    },
+    "notes": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memroy@1.0.2"]
+    }
+  }
+}

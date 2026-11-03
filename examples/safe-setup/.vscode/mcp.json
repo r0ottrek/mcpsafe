@@ -1,0 +1,27 @@
+{
+  "inputs": [
+    { "type": "promptString", "id": "github-token", "description": "GitHub token", "password": true }
+  ],
+  "servers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${input:github-token}" }
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@0.0.84"]
+    },
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.1.0", "${workspaceFolder}"]
+    },
+    "fetch": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "mcp/fetch@sha256:3c5a0b51d4f6a9e8c2b1d7e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0"]
+    }
+  }
+}
