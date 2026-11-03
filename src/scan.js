@@ -7,6 +7,7 @@ import { listTools } from './live.js';
 import { score, sortFindings } from './score.js';
 import { SEVERITIES } from './rules.js';
 import { parseJsonc } from './jsonc.js';
+import { lineOf } from './locate.js';
 
 export const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -51,6 +52,8 @@ export async function scan(o = {}) {
 
   const ignore = new Set((o.ignore || []).map((x) => x.toUpperCase()));
   findings = sortFindings(findings.filter((f) => !ignore.has(f.id)));
+  const textOf = Object.fromEntries(configs.map((c) => [c.source.path, c.text]));
+  for (const f of findings) f.line = lineOf(textOf[f.file], f.jsonPath);
   return {
     version: VERSION,
     generatedAt: new Date().toISOString(),

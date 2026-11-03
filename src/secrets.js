@@ -43,8 +43,8 @@ export function entropy(s) {
 
 export function mask(v) {
   const s = String(v);
-  if (s.length <= 8) return '****';
-  return `${s.slice(0, 4)}…${'*'.repeat(4)} (${s.length} chars)`;
+  if (s.length <= 8) return '••••••••';
+  return `${s.slice(0, 4)}${'•'.repeat(8)}`;
 }
 
 /**

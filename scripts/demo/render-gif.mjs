@@ -10,8 +10,8 @@ const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 
 const [ansiFile, outGif, command = 'npx mcpsafe'] = process.argv.slice(2);
-const ROWS = 30;
-const COLS = 102;
+const ROWS = 38;
+const COLS = 88;
 
 const COLORS = { 31: '#ff6b6b', 32: '#69db7c', 33: '#fcc419', 34: '#74c0fc', 35: '#da77f2', 36: '#66d9e8', 90: '#868e96', 97: '#ffffff', 30: '#111' };
 const BG = { 41: '#e03131', 42: '#2f9e44', 43: '#f59f00' };
@@ -72,12 +72,13 @@ frames.push([screen([...shown, `${prompt}<span class="cur">█</span>`]), 4500])
 
 const page = (lines) => `<!doctype html><html><head><style>
 body{margin:0;background:transparent;font-family:'DejaVu Sans Mono',Menlo,monospace}
-.win{width:${COLS * 8.45 + 32}px;background:#16181d;border-radius:10px;overflow:hidden;box-shadow:0 0 0 1px #2c2f36}
-.bar{height:30px;background:#22252b;display:flex;align-items:center;gap:8px;padding:0 12px}
+.win{width:${COLS * 8.45 + 32}px;background:#111317;border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px #2c2f36}
+.bar{height:32px;background:#1d2026;display:flex;align-items:center;gap:8px;padding:0 13px;position:relative;border-bottom:1px solid #262a31}
+.bar b{position:absolute;left:0;right:0;text-align:center;font:500 12.5px 'Inter',sans-serif;color:#8a929e;pointer-events:none}
 .bar i{width:12px;height:12px;border-radius:50%;display:block}
-.term{padding:12px 16px 14px;color:#e9ecef;font-size:14px;line-height:19px;height:${ROWS * 19}px;white-space:pre;overflow:hidden}
+.term{padding:12px 16px 14px;color:#e9ecef;font-size:14px;line-height:17px;height:${ROWS * 17}px;white-space:pre;overflow:hidden}
 .cur{color:#adb5bd}
-</style></head><body><div class="win"><div class="bar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+</style></head><body><div class="win"><div class="bar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i><b>~/code/my-app — zsh</b></div>
 <div class="term">${lines.join('\n')}</div></div></body></html>`;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpsafe-gif-'));

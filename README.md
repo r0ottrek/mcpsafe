@@ -1,102 +1,156 @@
+<div align="center">
+
+<img src="docs/logo.svg" width="72" height="72" alt="">
+
 # mcpsafe
 
-**A one-command security audit for your MCP servers and AI agent configs.**
+**A one-command security check for your MCP servers and AI agent setup.**
+
+Find leaked API keys, poisoned tool descriptions, unpinned packages and<br>over-privileged servers in Claude, Cursor, VS Code and more, before they bite.
+
+[![CI](https://github.com/r0ottrek/mcpsafe/actions/workflows/ci.yml/badge.svg)](https://github.com/r0ottrek/mcpsafe/actions/workflows/ci.yml)
+![dependencies: 0](https://img.shields.io/badge/dependencies-0-10b981)
+![node >= 18](https://img.shields.io/badge/node-%E2%89%A518-10b981)
+[![license: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 
 ```bash
 npx mcpsafe
 ```
 
-MCP servers run with your permissions, see your files and talk to your model. Most people install them by pasting a JSON snippet from a README. `mcpsafe` reads the configs of every AI client on your machine and tells you, in plain language, which of those setups are risky and how to fix them.
+<img src="docs/demo.gif" width="780" alt="mcpsafe scanning a machine with Claude Desktop, Claude Code and Cursor configs, scoring 36/100 and listing what to fix first">
 
-![mcpsafe scanning a machine with Claude Desktop, Claude Code and Cursor configs](docs/demo.gif)
+</div>
 
-- **Zero install, zero dependencies.** Plain Node.js 18+. Static scans never touch the network.
-- **Finds every config.** Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Cline, Roo Code and Gemini CLI, on macOS, Linux and Windows. Comments and trailing commas are fine.
-- **18 checks** for secrets, supply chain, over-privileged tools, auto-approval and tool poisoning.
-- **A score and a fix list**, not just a wall of warnings. Secrets are always masked.
-- **Terminal, HTML, JSON, SARIF and Markdown** output.
-- **GitHub Action** that catches risky `.mcp.json` / `.cursor/mcp.json` / `.vscode/mcp.json` changes in pull requests.
+<br>
+
+## Why
+
+MCP servers run with your permissions, read your files, and put text straight into your model's context. Most people install them by pasting a JSON snippet from a README and never look at it again. That snippet is often where the problems are:
+
+- **A GitHub token pasted into `claude_desktop_config.json`**, readable by any process on the machine and copied into every backup.
+- **`npx -y some-server` with no version**, so whatever gets published next runs on your laptop at the next restart.
+- **A tool description with hidden instructions** telling the model to read `~/.ssh/id_rsa` and send it along "as a note". You never see it; the model does.
+
+`mcpsafe` finds every MCP config on your machine, runs 18 checks against it, and gives you a score and a short, ordered list of what to fix.
+
+## Quick start
+
+```bash
+npx mcpsafe                 # scan this machine + the current folder
+npx mcpsafe --html          # also write a shareable HTML report
+npx mcpsafe --connect       # also inspect live tool descriptions (starts your servers)
+```
+
+No install, no account, no dependencies. A normal scan only reads files and never touches the network.
+
+## Three ways to see the results
+
+### In your terminal
+
+Findings are grouped by server, with a score box up top and the fixes that matter most at the bottom, each tagged with how many points it's worth. Add `-v` for masked evidence and the full fix list.
+
+### As an HTML report
+
+`npx mcpsafe --html` writes a single self-contained file you can open, share or print to PDF. It has a score gauge, prioritized fix cards, a card for every server, and searchable, filterable findings that show the exact config lines involved, with secrets masked. It follows your light or dark setting.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/report-dark.png">
+  <img src="docs/report-light.png" alt="mcpsafe HTML report: score gauge showing 24 out of 100, grade F, a severity breakdown, and six 'fix these first' cards">
+</picture>
+
+<details>
+<summary><b>See a finding up close</b></summary>
+<br>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/finding-dark.png">
+  <img src="docs/finding-light.png" alt="An expanded finding in the HTML report showing the masked GitHub token on line 10 of claude_desktop_config.json, why it matters, and how to fix it">
+</picture>
+</details>
+
+### In CI
+
+The GitHub Action scans the MCP configs committed to your repo (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json` and friends), annotates the offending lines on the pull request, writes a summary to the job page, and can upload SARIF to GitHub code scanning. [Set it up ↓](#github-action)
 
 ## What it checks
 
-| ID | Severity | Check |
-|---|---|---|
-| MCS001 | high (critical in repo files) | Secret stored in plain text: API keys, tokens, `Bearer` headers, DB URLs with passwords |
-| MCS002 | medium | Config file with secrets is readable by other users |
-| MCS003 | medium | `npx` / `uvx` / `pipx` package not pinned to an exact version |
-| MCS004 | medium | Docker image without a tag, or `:latest` |
-| MCS005 | high | Remote server over plain `http://` (not localhost) |
-| MCS006 | high | Token or key in the server URL query string |
-| MCS007 | high | Server exposes shell / command execution |
-| MCS008 | high | Filesystem access to `/`, `~`, `C:\` or a whole home folder (also Docker mounts) |
-| MCS009 | high | Container started with `--privileged`, host network/PID, extra capabilities or the Docker socket |
-| MCS010 | critical | Launch command pipes a downloaded script into a shell (`curl … \| sh`) |
-| MCS011 | medium / high | Tools auto-approved: `autoApprove`, `alwaysAllow`, `trust: true`, `mcp__server` allow rules, `bypassPermissions`, `chat.tools.autoApprove` |
-| MCS012 | medium | Claude Code `enableAllProjectMcpServers` (any cloned repo can start servers) |
-| MCS013 | high | Package name is a lookalike of a popular MCP server (typosquat) |
-| MCS014 | medium | Server runs from `/tmp`, `Downloads` or another temp folder |
-| MCS015 | high | Invisible Unicode (zero-width, bidi override, tag characters) in a config |
-| MCS016 | critical | Hidden instructions in tool or parameter descriptions (tool poisoning) |
-| MCS017 | medium | Tool name collisions, or one server's descriptions giving orders about another server's tools |
-| MCS018 | medium | Installed straight from a git repo or URL without a pinned commit |
+<table>
+<tr><th align="left">Area</th><th align="left">Check</th><th align="left">Severity</th></tr>
+<tr><td rowspan="3"><b>Secrets</b></td>
+  <td><code>MCS001</code> API keys, tokens, <code>Bearer</code> headers and DB passwords stored in plain text</td><td>High · critical in repo files</td></tr>
+<tr><td><code>MCS002</code> Config file holding secrets is readable by other users</td><td>Medium</td></tr>
+<tr><td><code>MCS006</code> Token or key in a server URL's query string</td><td>High</td></tr>
+<tr><td rowspan="5"><b>Supply chain</b></td>
+  <td><code>MCS003</code> <code>npx</code> / <code>uvx</code> / <code>pipx</code> package not pinned to an exact version</td><td>Medium</td></tr>
+<tr><td><code>MCS004</code> Docker image with no tag or <code>:latest</code></td><td>Medium</td></tr>
+<tr><td><code>MCS013</code> Package name is a lookalike of a popular MCP server</td><td>High</td></tr>
+<tr><td><code>MCS018</code> Installed straight from git or a URL with no pinned commit</td><td>Medium</td></tr>
+<tr><td><code>MCS010</code> Launch command pipes a downloaded script into a shell</td><td>Critical</td></tr>
+<tr><td rowspan="5"><b>Permissions</b></td>
+  <td><code>MCS007</code> Server exposes shell or command execution</td><td>High</td></tr>
+<tr><td><code>MCS008</code> Filesystem access to <code>/</code>, <code>~</code>, <code>C:\</code> or a whole home folder</td><td>High</td></tr>
+<tr><td><code>MCS009</code> Container runs privileged, on the host network, or with the Docker socket</td><td>High</td></tr>
+<tr><td><code>MCS011</code> Tools auto-approved (<code>autoApprove</code>, <code>alwaysAllow</code>, <code>trust</code>, <code>bypassPermissions</code>, …)</td><td>Medium · High</td></tr>
+<tr><td><code>MCS012</code> Every project's <code>.mcp.json</code> servers start without asking</td><td>Medium</td></tr>
+<tr><td rowspan="3"><b>Transport</b></td>
+  <td><code>MCS005</code> Remote server over plain <code>http://</code></td><td>High</td></tr>
+<tr><td><code>MCS014</code> Server runs from <code>/tmp</code>, <code>Downloads</code> or another temp folder</td><td>Medium</td></tr>
+<tr><td><code>MCS015</code> Invisible Unicode (zero-width, bidi, tag characters) hidden in a config</td><td>High</td></tr>
+<tr><td rowspan="2"><b>Tool poisoning</b><br><sub>with <code>--connect</code></sub></td>
+  <td><code>MCS016</code> Hidden instructions in tool or parameter descriptions</td><td>Critical</td></tr>
+<tr><td><code>MCS017</code> Tool name collisions, or one server giving orders about another's tools</td><td>Medium</td></tr>
+</table>
 
-Run `npx mcpsafe --rules` to list them, and see [`src/rules.js`](src/rules.js) for the reasoning and fix for each.
+Each rule explains why it matters and how to fix it. Run `npx mcpsafe --rules` or read [`src/rules.js`](src/rules.js).
 
-## Usage
+## Supported clients
 
-```bash
-npx mcpsafe                       # scan your user configs + the current folder
-npx mcpsafe ./my-repo             # also scan a project folder (recursively)
-npx mcpsafe --no-home .           # only the project, ignore your machine
-npx mcpsafe --html                # also write mcpsafe-report.html
-npx mcpsafe --json > report.json  # machine-readable
-npx mcpsafe --fail-on high        # exit 1 if anything high or critical is found
-```
-
-| Option | What it does |
+| Client | Files mcpsafe reads |
 |---|---|
-| `--connect` | Starts each configured server, lists its tools and checks the descriptions (MCS016, MCS017). Off by default because it runs the servers. |
-| `--tools <file>` | Checks a saved `tools/list` response instead of connecting. |
-| `--html [file]` | Writes a self-contained HTML report. |
-| `--sarif <file>` | Writes SARIF 2.1.0 for GitHub code scanning. |
-| `--markdown <file>` | Appends a Markdown summary (used for CI job summaries). |
-| `--json` | Prints JSON instead of the terminal report. |
-| `--fail-on <severity>` | Exit code 1 if any finding is at or above `critical`, `high`, `medium` or `low`. |
-| `--min-score <n>` | Exit code 1 if the score is below `n`. |
-| `--ignore <ids>` | Skip rules, e.g. `--ignore MCS003,MCS004`. |
-| `--home <dir>` | Use a different home folder. |
-| `-v, --verbose` | Show masked evidence for each finding. |
+| **Claude Desktop** | `claude_desktop_config.json` (macOS, Windows, Linux) |
+| **Claude Code** | `~/.claude.json`, `~/.claude/settings.json`, `.mcp.json`, `.claude/settings*.json` |
+| **Cursor** | `~/.cursor/mcp.json`, `.cursor/mcp.json` |
+| **VS Code** | user `mcp.json` and `settings.json`, `.vscode/mcp.json`, `.vscode/settings.json` |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
+| **Cline / Roo Code** | their `globalStorage` MCP settings, `.roo/mcp.json` |
+| **Gemini CLI** | `~/.gemini/settings.json`, `.gemini/settings.json` |
 
-### Checking tool descriptions
+Comments and trailing commas are fine. Pass any other file or folder as an argument.
 
-A malicious or compromised server can hide instructions inside a tool description that the model reads but you never see. With `--connect`, mcpsafe speaks MCP to each server (stdio and Streamable HTTP), pages through `tools/list`, and inspects every tool and parameter description:
+## Checking tool descriptions
+
+A malicious or compromised server can hide instructions inside a tool description: the model reads them, you never see them. With `--connect`, mcpsafe starts each configured server, speaks MCP to it (stdio and Streamable HTTP), pages through `tools/list`, and checks every tool and parameter description. In the HTML report the suspicious phrases are highlighted.
 
 ```text
 $ npx mcpsafe --connect
 
-  CRITICAL  MCS016  Hidden instructions in tool description
-            server "calculator" · Claude Code · .mcp.json
-            Tool "multiply": hidden tag, asks the model to hide something from the user, pre-call
-            side task, references sensitive files, smuggles data through a parameter.
+  ┃ calculator  Claude Code · .mcp.json
+  ┃   ✖ CRITICAL  Hidden instructions in tool description                   MCS016
+  ┃               Tool "multiply": hidden tag, asks the model to hide something
+  ┃               from the user, pre-call side task, references sensitive files,
+  ┃               smuggles data through a parameter.
 ```
 
-Only use `--connect` on a machine where it is acceptable to start those servers.
+Only use `--connect` where it's fine for those servers to run. To check a saved `tools/list` response without starting anything, use `--tools tools.json`.
 
-### HTML report
+## Options
 
-`npx mcpsafe --html` writes a single, offline HTML file with the score, a prioritized fix list, and every finding with why it matters. It follows your light/dark setting.
-
-<img src="docs/report-light.png" alt="mcpsafe HTML report showing a score of 20, grade F, and a prioritized fix list" width="700">
-
-## Scoring
-
-Every scan starts at 100. Each finding subtracts points by severity (critical 25, high 12, medium 5, low 2). Repeats of the same rule count half as much each time, so one noisy rule cannot sink the score alone. Grades: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60, F below that.
-
-The score is a guide for prioritizing, not a certificate. Static checks cannot prove a server is safe.
+| Option | What it does |
+|---|---|
+| `[paths...]` | Config files or project folders to scan (folders are searched recursively). |
+| `--no-home` | Skip the configs in your home folder; only scan the paths you give. |
+| `--html [file]` | Write the HTML report (default `mcpsafe-report.html`). |
+| `--connect` | Start each server and check its tool descriptions. |
+| `--tools <file>` | Check tool descriptions from a saved `tools/list` JSON. |
+| `--json` | Print machine-readable JSON instead of the terminal report. |
+| `--sarif <file>` | Write SARIF 2.1.0 for GitHub code scanning. |
+| `--markdown <file>` | Append a Markdown summary (used for CI job summaries). |
+| `--fail-on <severity>` | Exit 1 if anything at or above `critical`, `high`, `medium` or `low` is found. |
+| `--min-score <n>` | Exit 1 if the score is below `n`. |
+| `--ignore <ids>` | Skip rules, e.g. `--ignore MCS003,MCS004`. |
+| `-v, --verbose` | Show masked evidence, every fix and the list of scanned files. |
+| `--rules` | List all rules. |
 
 ## GitHub Action
-
-Scan the MCP configs committed to a repository on every pull request:
 
 ```yaml
 name: MCP security
@@ -107,7 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write   # only needed for the SARIF upload
+      security-events: write   # only for the SARIF upload
     steps:
       - uses: actions/checkout@v4
       - uses: r0ottrek/mcpsafe@v1
@@ -119,29 +173,54 @@ jobs:
           sarif_file: mcpsafe.sarif
 ```
 
-The action annotates the offending config lines on the pull request, writes a summary table to the job page, and exposes `score`, `grade` and `findings` as outputs. Inputs: `path`, `fail-on`, `min-score`, `ignore`, `sarif`, `html`.
+| Input | Default | |
+|---|---|---|
+| `path` | `.` | Folder or file to scan |
+| `fail-on` | `high` | Fail the job at this severity or above; `none` to never fail |
+| `min-score` | | Fail the job below this score |
+| `ignore` | | Comma-separated rule IDs to skip |
+| `sarif` | `mcpsafe.sarif` | Where to write SARIF |
+| `html` | | Optional path for the HTML report (upload it as an artifact) |
 
-## Use it as a library
+Outputs: `score`, `grade`, `findings`, `sarif`.
+
+## How scoring works
+
+Every finding costs points by severity: critical 25, high 12, medium 4, low 1.5. Repeats of the same rule count half as much each time, so one noisy rule can't sink you alone. The total is mapped onto 0 to 100 on a soft curve: a couple of unpinned packages still leaves you with an A, while a leaked token plus a shell server drops you into C territory.
+
+| Grade | A | B | C | D | F |
+|---|---|---|---|---|---|
+| Score | 90+ | 80+ | 70+ | 60+ | below 60 |
+
+The score helps you prioritize. It's not a certificate: static checks can't prove a server is safe.
+
+## FAQ
+
+**Does it send my config anywhere?** No. A normal scan reads local files and makes no network requests. `--connect` starts your servers, which may connect to whatever they normally connect to.
+
+**Will it print my secrets?** No. Every report masks credentials (`ghp_••••••••`), including the code snippets in the HTML report.
+
+**A finding is intentional. How do I silence it?** Use `--ignore MCS007` (or the `ignore` input in CI).
+
+**Can I use it as a library?**
 
 ```js
 import { scan } from 'mcpsafe';
-
-const result = await scan({ paths: ['.'], includeHome: false });
-console.log(result.score, result.findings);
+const { score, findings } = await scan({ paths: ['.'], includeHome: false });
 ```
 
 ## Development
 
 ```bash
 git clone https://github.com/r0ottrek/mcpsafe && cd mcpsafe
-npm test                 # node:test, no dependencies
-npm run demo             # scan the deliberately risky example in examples/risky-setup
+npm test        # node:test, no dependencies
+npm run demo    # scan the deliberately risky example in examples/risky-setup
 ```
 
-`examples/risky-setup` triggers most rules; `examples/safe-setup` shows the same servers configured safely and scores 100. The fake credentials in the examples are not real.
+`examples/risky-setup` trips most rules on purpose, and `examples/safe-setup` shows the same kind of servers configured safely (it scores 100). The credentials in the examples are fake. The demo GIF and screenshots are generated by the scripts in [`scripts/demo`](scripts/demo).
 
-Ideas and new checks are welcome. A good check is specific, explains why it matters, and comes with a fix.
+New checks are welcome. A good one is specific, explains why it matters, and comes with a fix.
 
 ## License
 
-MIT
+[MIT](LICENSE)

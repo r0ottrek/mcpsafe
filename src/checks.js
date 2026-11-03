@@ -303,14 +303,14 @@ function checkClientSettings(ctx) {
 
 // ---------------- Tool-level checks (live mode / tools file) ----------------
 
-const POISON = [
+export const POISON = [
   [/<\s*(important|system|instructions?|secret|hidden|admin)\b[^>]*>/i, 'hidden tag'],
   [/\b(ignore|disregard|forget)\s+(all\s+|any\s+)?(previous|prior|above|earlier|other)\s+(instructions|prompts|rules)/i, 'instruction override'],
   [/\b(do not|don't|never|must not)\s+(tell|mention|inform|reveal|notify|show|alert)\b[^.]{0,40}\buser\b/i, 'asks the model to hide something from the user'],
   [/\b(before|prior to)\s+(using|calling|invoking)\s+(this|any|the)\s+tool\b[^.]{0,80}\b(read|cat|open|fetch|send|pass|include)\b/i, 'pre-call side task'],
   [/(~\/|\$HOME\/|%USERPROFILE%)?\.(ssh|aws|gnupg|kube|docker)\b|id_rsa|id_ed25519|\.env\b|credentials\.json|claude_desktop_config|\.cursor\/mcp\.json|mcp\.json|\/etc\/passwd|private[_ ]key/i, 'references sensitive files'],
   [/\b(send|post|upload|forward|exfiltrate|transmit)\b[^.]{0,60}\b(to|via)\b[^.]{0,40}(https?:\/\/|@[\w-]+\.\w+|webhook)/i, 'sends data to an external destination'],
-  [/\b(pass|include|put|add)\s+(its|the|their|all)\s+(contents?|content)\b[^.]{0,40}\b(as|in|into)\b[^.]{0,30}\b(param|parameter|argument|field|sidenote|note)/i, 'smuggles data through a parameter'],
+  [/\b(pass|include|put|add)\s+(its|the|their|all)\s+(contents?|content)\b[^.]{0,40}\b(as|in|into)\b[^.]{0,30}\b(parameters?|param|arguments?|field|sidenote|note)/i, 'smuggles data through a parameter'],
 ];
 
 export function analyzeDescription(text) {
@@ -347,7 +347,7 @@ export function checkTools(toolSets, serverByName = {}) {
       const reasons = analyzeDescription(full);
       if (reasons.length) {
         const severe = reasons.some((r) => r !== 'references sensitive files' && r !== 'long encoded blob') || reasons.length >= 2;
-        out.push(finding('MCS016', ctx, `Tool "${t.name}": ${reasons.join(', ')}.`, { severity: severe ? 'critical' : 'medium', evidence: full.replace(/\s+/g, ' ').slice(0, 200), jsonPath: `tools.${t.name}` }));
+        out.push(finding('MCS016', ctx, `Tool "${t.name}": ${reasons.join(', ')}.`, { severity: severe ? 'critical' : 'medium', evidence: full.replace(/[ \t]+/g, ' ').trim().slice(0, 1200), jsonPath: `tools.${t.name}` }));
       }
       // Shadowing: same tool name on multiple servers
       if (owner.has(t.name) && owner.get(t.name) !== set.server) {

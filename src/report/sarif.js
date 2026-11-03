@@ -1,6 +1,7 @@
 // SARIF 2.1.0 output, so findings show up in GitHub code scanning.
 import path from 'node:path';
 import { RULES } from '../rules.js';
+import { lineOf } from '../locate.js';
 
 const LEVEL = { critical: 'error', high: 'error', medium: 'warning', low: 'note', info: 'note' };
 const SECURITY_SEVERITY = { critical: '9.5', high: '8.0', medium: '5.5', low: '3.0', info: '0.0' };
@@ -15,18 +16,6 @@ export function renderSarif(result, { root = process.cwd() } = {}) {
     properties: { tags: ['security', 'mcp'], 'security-severity': SECURITY_SEVERITY[r.severity] },
   }));
 
-  const lineOf = (file, jsonPath, text) => {
-    if (!text || !jsonPath) return 1;
-    // Find the line of the most specific key in the JSON path.
-    const keys = jsonPath.match(/[\w.@-]+|"[^"]+"/g) || [];
-    let idx = 0;
-    for (const k of keys) {
-      const key = k.replace(/^"|"$/g, '').replace(/\[\d+\]$/, '');
-      const at = text.indexOf(`"${key}"`, idx);
-      if (at >= 0) idx = at;
-    }
-    return text.slice(0, idx).split('\n').length;
-  };
 
   const results = result.findings.map((f) => {
     const cfg = result.configs.find((c) => c.source.path === f.file);
@@ -35,7 +24,7 @@ export function renderSarif(result, { root = process.cwd() } = {}) {
       ruleId: f.id,
       level: LEVEL[f.severity],
       message: { text: `${f.server ? `[${f.server}] ` : ''}${f.message}` },
-      locations: [{ physicalLocation: { artifactLocation: { uri: rel }, region: { startLine: lineOf(f.file, f.jsonPath, cfg?.text) } } }],
+      locations: [{ physicalLocation: { artifactLocation: { uri: rel }, region: { startLine: lineOf(cfg?.text, f.jsonPath) || 1 } } }],
       properties: { 'security-severity': SECURITY_SEVERITY[f.severity], severity: f.severity },
     };
   });

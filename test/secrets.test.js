@@ -27,5 +27,5 @@ test('ignores placeholders and references', () => {
 
 test('masks secrets', () => {
   assert.ok(!mask(FAKE.github).includes(FAKE.github.slice(6)));
-  assert.equal(mask('short'), '****');
+  assert.equal(mask('short'), '••••••••');
 });
