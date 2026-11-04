@@ -71,7 +71,7 @@ runs:
             const lvl = ["critical", "high"].includes(f.severity) ? "error" : f.severity === "medium" ? "warning" : "notice";
             const file = require("path").relative(process.cwd(), f.file || "");
             const msg = `${f.server ? "[" + f.server + "] " : ""}${f.message}`.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-            console.log(`::${lvl} file=${file},title=${f.id} ${f.title}::${msg}`);
+            console.log(`::${lvl} file=${file}${f.line ? `,line=${f.line}` : ""},title=${f.id} ${f.title}::${msg}`);
           }
         ' "$RUNNER_TEMP/mcpsafe.json"
 

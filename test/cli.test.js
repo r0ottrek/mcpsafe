@@ -53,7 +53,7 @@ test('writes HTML and SARIF reports', () => {
   const r = run(['--no-home', path.join(root, 'examples/risky-setup'), '--tools', path.join(root, 'examples/risky-setup/tools.json'), '--html', html, '--sarif', sarif]);
   assert.equal(r.status, 0);
   const page = fs.readFileSync(html, 'utf8');
-  assert.match(page, /MCP security report/);
+  assert.match(page, /MCP configuration audit/);
   assert.match(page, /Hidden instructions in tool description/);
   assert.ok(!page.includes('<IMPORTANT>'), 'tool text must be escaped');
   const s = JSON.parse(fs.readFileSync(sarif, 'utf8'));

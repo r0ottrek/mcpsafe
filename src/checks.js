@@ -16,6 +16,7 @@ function finding(id, ctx, message, extra = {}) {
     client: ctx.server?.client ?? ctx.config?.source.client ?? null,
     file: ctx.server?.file ?? ctx.config?.source.path ?? null,
     jsonPath: extra.jsonPath ?? ctx.server?.jsonPath ?? null,
+    serverPath: ctx.server?.jsonPath ?? null,
     message,
     evidence: extra.evidence ?? null,
     fix: RULES[id].fix,
@@ -89,6 +90,12 @@ function broadPath(p) {
   return false;
 }
 
+// JSON path of the argument holding `value`, so reports can point at the exact line.
+function argPath(s, value) {
+  const i = s.args.findIndex((a) => a === value || (value && a.includes(value)));
+  return i >= 0 ? `${s.jsonPath}.args[${i}]` : s.command ? `${s.jsonPath}.command` : s.jsonPath;
+}
+
 // ---------------- Server-level checks ----------------
 
 function checkSecrets(ctx) {
@@ -131,7 +138,7 @@ function checkUrl(ctx) {
   let u;
   try { u = new URL(s.url); } catch { return out; }
   if (u.protocol === 'http:' && !isLocalHost(u.hostname)) {
-    out.push(finding('MCS005', ctx, `Connects to ${u.host} over plain http.`, { evidence: s.url.replace(/\?.*/, '') }));
+    out.push(finding('MCS005', ctx, `Connects to ${u.host} over plain http.`, { evidence: s.url.replace(/\?.*/, ''), jsonPath: `${s.jsonPath}.${s.raw.url ? 'url' : s.raw.serverUrl ? 'serverUrl' : 'httpUrl'}` }));
   }
   for (const [k, v] of u.searchParams) {
     if (/(key|token|secret|auth|password|sig|access)/i.test(k) && v && !/\$\{/.test(v)) {
@@ -147,18 +154,18 @@ function checkPackages(ctx) {
   for (const p of launchedPackages(s)) {
     if (p.kind === 'local') continue;
     if (p.kind === 'git' || p.kind === 'url') {
-      if (!p.pinned) out.push(finding('MCS018', ctx, `Launches ${p.spec} straight from ${p.kind === 'git' ? 'a git repository' : 'a URL'} without a pinned commit.`, { evidence: p.spec }));
+      if (!p.pinned) out.push(finding('MCS018', ctx, `Launches ${p.spec} straight from ${p.kind === 'git' ? 'a git repository' : 'a URL'} without a pinned commit.`, { evidence: p.spec, jsonPath: argPath(s, p.spec) }));
       continue;
     }
     if (p.manager === 'docker') {
-      if (!p.pinned) out.push(finding('MCS004', ctx, p.version ? `Image ${p.spec} uses the mutable :latest tag.` : `Image ${p.spec} has no tag, so it resolves to :latest.`, { evidence: p.spec }));
+      if (!p.pinned) out.push(finding('MCS004', ctx, p.version ? `Image ${p.spec} uses the mutable :latest tag.` : `Image ${p.spec} has no tag, so it resolves to :latest.`, { evidence: p.spec, jsonPath: argPath(s, p.spec) }));
     } else if (!p.pinned) {
       out.push(finding('MCS003', ctx,
         p.version ? `${p.name} is requested as "${p.version}", which is not an exact version.` : `${p.name} runs whatever version is newest on ${p.manager} at launch.`,
-        { evidence: p.spec }));
+        { evidence: p.spec, jsonPath: argPath(s, p.spec) }));
     }
     const squat = typosquatOf(p.name);
-    if (squat) out.push(finding('MCS013', ctx, `"${p.name}" is very close to the popular package "${squat}".`, { evidence: p.name }));
+    if (squat) out.push(finding('MCS013', ctx, `"${p.name}" is very close to the popular package "${squat}".`, { evidence: p.name, jsonPath: argPath(s, p.spec) }));
   }
   return out;
 }
@@ -175,7 +182,7 @@ function checkShell(ctx) {
   const pkgs = launchedPackages(s);
   const name = [s.name, ...pkgs.map((p) => p.name)].join(' ');
   if (SHELL_PACKAGES.test(name) || (pkgs.length === 0 && /\b(shell|terminal)\b/i.test(s.name))) {
-    out.push(finding('MCS007', ctx, `"${pkgs[0]?.name || s.name}" exposes shell / command execution tools.`, { evidence: pkgs[0]?.spec || s.name }));
+    out.push(finding('MCS007', ctx, `"${pkgs[0]?.name || s.name}" exposes shell / command execution tools.`, { evidence: pkgs[0]?.spec || s.name, jsonPath: pkgs[0] ? argPath(s, pkgs[0].spec) : s.jsonPath }));
   } else if (['bash', 'sh', 'zsh', 'powershell', 'pwsh'].includes(base) && args.some((a) => /^(-c|-command|-Command)$/i.test(a))) {
     // Inline shell script as the launcher is worth a look, but it is not a shell tool by itself.
     out.push(finding('MCS007', ctx, 'Server is launched through an inline shell script, which hides what actually runs.', { severity: 'low', evidence: joined.slice(0, 160) }));
@@ -191,7 +198,7 @@ function checkFilesystem(ctx) {
   if (isFs) {
     const roots = argsAfterPackage(s).filter((a) => !/^[a-z]+:\/\//.test(a));
     const broad = roots.filter(broadPath);
-    if (broad.length) out.push(finding('MCS008', ctx, `Allowed directories include ${broad.map((b) => `"${b}"`).join(', ')}.`, { evidence: broad.join(' ') }));
+    if (broad.length) out.push(finding('MCS008', ctx, `Allowed directories include ${broad.map((b) => `"${b}"`).join(', ')}.`, { evidence: broad.join(' '), jsonPath: argPath(s, broad[0]) }));
   }
   // Docker volume mounts of / or home
   const { base, args } = effectiveCommand(s);
@@ -243,7 +250,7 @@ function checkLocation(ctx) {
   const s = ctx.server;
   const candidates = [s.command, s.cwd, ...s.args].filter(Boolean).map((x) => String(x).replace(/\\/g, '/'));
   const hit = candidates.find((c) => /^(\/tmp\/|\/var\/tmp\/|\/private\/tmp\/|\/dev\/shm\/)|\/Downloads\/|\/AppData\/Local\/Temp\//i.test(c));
-  return hit ? [finding('MCS014', ctx, `Runs code from ${hit}.`, { evidence: hit })] : [];
+  return hit ? [finding('MCS014', ctx, `Runs code from ${hit}.`, { evidence: hit, jsonPath: argPath(s, hit) })] : [];
 }
 
 export const SERVER_CHECKS = [checkSecrets, checkUrl, checkPackages, checkShell, checkFilesystem, checkDocker, checkAutoApprove, checkLocation];
