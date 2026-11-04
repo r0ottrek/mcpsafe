@@ -114,6 +114,9 @@ function uniqueToolsNames(sets) {
   return sets;
 }
 
+// Servers --connect starts or calls at the same time.
+const CONNECT_CONCURRENCY = 4;
+
 const configErrors = (configs) => configs.filter((c) => c.error).map((c) => ({ path: c.source.path, error: c.error, missing: !!c.source.missing }));
 
 /**
@@ -124,11 +127,15 @@ const configErrors = (configs) => configs.filter((c) => c.error).map((c) => ({ p
  * @param {boolean} [o.connect]
  * @param {string[]} [o.toolsFiles]
  * @param {string[]} [o.ignore]
+ * @param {number} [o.timeoutMs] how long --connect waits for one server (default 20s)
  * @param {(msg: string) => void} [o.onProgress]
  */
 export async function scan(o = {}) {
   const sources = discover({ paths: o.paths, home: o.home, includeHome: o.includeHome !== false, depth: o.depth });
-  const configs = sources.map(loadConfig);
+  const loaded = sources.map(loadConfig);
+  // A path that does not exist was never a config file: it is reported in errors only,
+  // so no report counts it as a scanned file.
+  const configs = loaded.filter((c) => !c.source.missing);
   let findings = runChecks(configs);
   const allServers = configs.flatMap((c) => c.servers);
 
@@ -138,17 +145,37 @@ export async function scan(o = {}) {
   uniqueToolsNames(toolSets);
   if (o.connect) {
     const turnedOff = mcpjsonDisabled(configs);
-    for (const s of allServers.filter((x) => !x.disabled && !turnedOff(x))) {
-      o.onProgress?.(`Listing tools from "${s.name}"…`);
-      try {
-        const tools = await listTools(s);
-        // srv ties the tools to this exact server, not just to its name.
-        toolSets.push({ server: s.name, srv: s, tools, file: s.file, secrets: tools.secrets || [] });
-        if (tools.warning) liveErrors.push({ server: s.name, file: s.file, client: s.client, error: tools.warning });
-      } catch (e) {
-        liveErrors.push({ server: s.name, file: s.file, client: s.client, error: e.message });
+    const live = allServers.filter((x) => !x.disabled && !turnedOff(x));
+    // A few servers at a time, so servers that never answer wait out their timeouts
+    // together instead of one after another. Results keep the config order.
+    const results = new Array(live.length);
+    let nextIndex = 0;
+    let finished = 0;
+    const worker = async () => {
+      while (nextIndex < live.length) {
+        const i = nextIndex++;
+        const s = live[i];
+        try {
+          results[i] = { tools: await listTools(s, o.timeoutMs) };
+        } catch (e) {
+          results[i] = { error: e };
+        }
+        finished++;
+        if (finished < live.length) o.onProgress?.(`Listing tools: ${finished} of ${live.length} servers done…`);
       }
-    }
+    };
+    if (live.length) o.onProgress?.(live.length === 1 ? `Listing tools from "${live[0].name}"…` : `Listing tools from ${live.length} servers…`);
+    await Promise.all(Array.from({ length: Math.min(CONNECT_CONCURRENCY, live.length) }, worker));
+    live.forEach((s, i) => {
+      const { tools, error } = results[i];
+      if (error) {
+        liveErrors.push({ server: s.name, file: s.file, client: s.client, error: error.message });
+        return;
+      }
+      // srv ties the tools to this exact server, not just to its name.
+      toolSets.push({ server: s.name, srv: s, tools, file: s.file, secrets: tools.secrets || [] });
+      if (tools.warning) liveErrors.push({ server: s.name, file: s.file, client: s.client, error: tools.warning });
+    });
   }
   // Every secret of every scanned config: live errors and tool text are
   // masked with all of them, since a value marked as a secret in one server
@@ -172,7 +199,7 @@ export async function scan(o = {}) {
     liveErrors,
     // Config files that could not be read or parsed. When this is not empty
     // the scan is incomplete, and a clean score does not mean the setup is fine.
-    errors: configErrors(configs),
+    errors: configErrors(loaded),
     findings,
     score: score(findings),
   };

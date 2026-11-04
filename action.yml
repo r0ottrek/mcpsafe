@@ -27,10 +27,10 @@ inputs:
 
 outputs:
   score:
-    description: 'Security score from 0 to 100.'
+    description: 'Security score from 0 to 100. Empty when nothing could be scanned, for example when path does not exist.'
     value: ${{ steps.scan.outputs.score }}
   grade:
-    description: 'Letter grade, A to F.'
+    description: 'Letter grade, A to F. Empty when nothing could be scanned.'
     value: ${{ steps.scan.outputs.grade }}
   findings:
     description: 'Number of findings.'
@@ -62,14 +62,18 @@ runs:
         # --html=<file> takes any name; "--html <file>" only takes one ending in .html.
         [ -n "$MCPSAFE_HTML" ] && args+=("--html=$MCPSAFE_HTML")
         [ -n "$MCPSAFE_MIN_SCORE" ] && args+=(--min-score "$MCPSAFE_MIN_SCORE")
-        [ -n "$MCPSAFE_FAIL_ON" ] && [ "$MCPSAFE_FAIL_ON" != "none" ] && args+=(--fail-on "$MCPSAFE_FAIL_ON")
+        # Any case works: High, NONE.
+        fail_on="$(printf '%s' "$MCPSAFE_FAIL_ON" | tr '[:upper:]' '[:lower:]')"
+        [ -n "$fail_on" ] && [ "$fail_on" != "none" ] && args+=(--fail-on "$fail_on")
 
         json_args=(--no-home "$MCPSAFE_PATH" --json)
         [ -n "$MCPSAFE_IGNORE" ] && json_args+=(--ignore "$MCPSAFE_IGNORE")
         node "$bin" "${json_args[@]}" > "$RUNNER_TEMP/mcpsafe.json" || true
         node -e '
           const r = require(process.argv[1]);
-          const out = [`score=${r.score.value}`, `grade=${r.score.grade}`, `findings=${r.findings.length}`, `complete=${r.complete !== false}`].join("\n");
+          // When nothing could be read (a path that does not exist), there is no score or grade to report.
+          const none = !(r.files || []).length && !r.toolsScanned && (r.errors || []).length > 0;
+          const out = [`score=${none ? "" : r.score.value}`, `grade=${none ? "" : r.score.grade}`, `findings=${r.findings.length}`, `complete=${r.complete !== false}`].join("\n");
           require("fs").appendFileSync(process.env.GITHUB_OUTPUT, out + "\n");
           for (const e of r.errors || []) {
             const file = require("path").relative(process.cwd(), e.path || "");

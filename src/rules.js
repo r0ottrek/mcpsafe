@@ -69,7 +69,7 @@ export const RULES = {
   MCS010: {
     title: 'Downloads and runs a remote script',
     severity: 'critical',
-    why: 'The launch command pipes a script from the internet straight into a shell. Whoever controls that URL controls your machine on every start.',
+    why: 'The launch command downloads a script from the internet and runs it. Whoever controls that URL controls your machine on every start.',
     fix: 'Download the script once, review it, and run a local pinned copy, or install the server from a package registry with a pinned version.',
   },
   MCS011: {

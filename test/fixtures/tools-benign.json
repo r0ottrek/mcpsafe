@@ -2954,6 +2954,30 @@
           }
         }
       }
+    },
+    {
+      "name": "path_setup",
+      "description": "Prints the line that puts the CLI on your PATH. Add it to PATH in your ~/.bashrc, then open a new terminal or run source ~/.bashrc.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "shell": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "shell_env",
+      "description": "Shows which shell startup file sets your environment. After you change PATH in ~/.zshrc, run . ~/.zshrc or open a new terminal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "shell": {
+            "type": "string"
+          }
+        }
+      }
     }
   ]
 }

@@ -7,7 +7,7 @@
 // default. A URL with one of these on a loopback host grants nothing beyond
 // the machine, so it is not reported. The same password on any other host, or
 // any other password on loopback, still is.
-const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1|0\.0\.0\.0|host\.docker\.internal)$/i;
+const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost\.?|127(?:\.\d{1,3}){3}|\[::1\]|::1|0\.0\.0\.0|host\.docker\.internal)$/i;
 const DEV_DB_PASSWORDS = new Set([
   'postgres', 'password', 'pass', 'root', 'example', 'secret', 'admin', 'dev', 'test', 'mysql', 'mariadb',
   'redis', 'redispw', 'mongo', 'mongodb', 'guest', 'clickhouse', 'mysecretpassword',

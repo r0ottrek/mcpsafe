@@ -43,6 +43,19 @@ function cpWidth(cp) {
   return 1;
 }
 
+/**
+ * What could not be checked, for the incomplete-scan banners:
+ * "1 config file could not be read or parsed and 1 path was not found".
+ */
+export function unreadSummary(errors) {
+  const missing = errors.filter((e) => e.missing).length;
+  const unreadable = errors.length - missing;
+  const parts = [];
+  if (unreadable) parts.push(`${unreadable} config file${unreadable === 1 ? '' : 's'} could not be read or parsed`);
+  if (missing) parts.push(`${missing} path${missing === 1 ? ' was' : 's were'} not found`);
+  return parts.join(' and ');
+}
+
 /** Columns a string takes in a terminal, ignoring colour codes. */
 export function dispWidth(s) {
   let w = 0;

@@ -6,7 +6,7 @@ import { RULES, SEVERITIES } from '../rules.js';
 import { displayPath, poisonSpans, spanRank } from '../checks.js';
 import { impactByRule } from '../score.js';
 import { snippet } from '../locate.js';
-import { safe, dispWidth, splitW, truncW, padW } from './text.js';
+import { safe, dispWidth, splitW, truncW, padW, unreadSummary } from './text.js';
 
 export function makeColors(enabled) {
   const wrap = (open, close) => (s) => (enabled ? `\x1b[${open}m${s}\x1b[${close}m` : String(s));
@@ -50,7 +50,10 @@ function underline(text, jsonPath) {
   if (start < 0) return null;
   const key = (jsonPath || '').match(/"[^"]+"|[^.[\]"]+/g)?.filter((k) => !/^\d+$/.test(k)).pop()?.replace(/"/g, '');
   const at = key ? text.indexOf(`"${key}"`) : -1;
-  const end = text.replace(/[,{[\s]+$/, '').length;
+  // The line without trailing commas, brackets and spaces. Scanned from the end, since a
+  // regex for this backtracks on a long run of "{" that does not reach the end.
+  let end = text.length;
+  while (end > 0 && /[,{[\s]/.test(text[end - 1])) end--;
   if (at >= 0 && !/\[\d+\]$/.test(jsonPath)) return [at, Math.max(at + key.length + 2, end) - at];
   return [start, Math.max(1, end - start)];
 }
@@ -69,13 +72,17 @@ function renderDiagnostics(result, { color = false, width = 100 } = {}) {
     for (const [i, line] of wrap(text, '', W - pad.length - label.length - 6).entries()) push(i ? `${pad}   ${' '.repeat(label.length + 2)}${line}` : `${pad} ${gut('=')} ${c.bold(`${label}:`)} ${line}`);
   };
   for (const f of findings) {
-    push(`${sev[f.severity](`${f.severity}[${f.id}]`)}${c.bold(`: ${f.title}`)}`);
+    // The title wraps under itself, after "severity[ID]: ".
+    const tag = `${f.severity}[${f.id}]`;
+    const titleLines = wrap(f.title, '', W - tag.length - 2);
+    titleLines.forEach((t, i) => push(i ? `${' '.repeat(tag.length + 2)}${c.bold(t)}` : `${sev[f.severity](tag)}${c.bold(`: ${t}`)}`));
     // Masked with the whole file as context, so a value after a --flag line is hidden too.
     const src = f.line ? snippet(textOf[f.file], f.line, 0)?.[0]?.text ?? null : null;
     const num = f.line ? String(f.line).padStart(gutterW) : '';
     const pad = ' '.repeat(gutterW);
     const message = safe(f.message);
-    if (f.file) push(`${pad}${gut('-->')} ${safe(displayPath(f.file))}${f.line ? `:${f.line}` : ''}`);
+    const at = f.line ? `:${f.line}` : '';
+    if (f.file) push(`${pad}${gut('-->')} ${shortPath(f.file, Math.max(12, W - pad.length - 5 - at.length))}${at}`);
     const srcLine = src == null ? null : safe(src);
     if (srcLine != null && srcLine.trim()) {
       // Columns, not string indexes, so wide characters keep the carets aligned.
@@ -149,6 +156,7 @@ export function renderTerminal(result, { color = false, verbose = false, html = 
   const { score, findings, configs, servers, toolsScanned, liveErrors } = result;
   const errors = scanErrors(result);
   const incomplete = errors.length > 0;
+  const missingPaths = errors.filter((e) => e.missing);
   const g = score.grade;
   const tone = g === 'A' || g === 'B' ? c.green : g === 'C' || g === 'D' ? c.yellow : c.red;
   const sevC = { critical: (s) => c.bold(c.red(s)), high: c.red, medium: c.yellow, low: c.blue, info: c.gray };
@@ -164,6 +172,8 @@ export function renderTerminal(result, { color = false, verbose = false, html = 
     const indent = ' '.repeat(visible(first));
     wrap(text, '', W - 2 - indent.length).forEach((line, i) => push(`${i ? indent : first}${style(line)}`));
   };
+  // A "! ..." warning: the lines after the first start under the text, not under the "!".
+  const warn = (text) => para(`  ${c.yellow('!')} `, text, c.yellow);
 
   // Logo
   const clients = [...new Set(configs.map((x) => safe(x.source.client)))];
@@ -184,7 +194,9 @@ export function renderTerminal(result, { color = false, verbose = false, html = 
   push();
 
   if (!configs.length && !toolsScanned && !findings.length) {
-    para('  ', 'No MCP config files found. Pass a file or folder: mcpsafe ./path', c.yellow);
+    // Nothing was read, so there is no score: a grade here would read as a pass.
+    if (missingPaths.length) for (const e of missingPaths) warn(`path not found: ${shortPath(e.path)}`);
+    else para('  ', 'No MCP config files found. Pass a file or folder: mcpsafe ./path', c.yellow);
     push();
     return L.join('\n');
   }
@@ -213,7 +225,7 @@ export function renderTerminal(result, { color = false, verbose = false, html = 
   if (verdictBelow) push(`  ${verdict}`);
   if (incomplete) {
     push();
-    para('  ', `! Incomplete scan: ${plural(errors.length, 'config file')} could not be read or parsed, so the score covers only the files that were read.`, c.yellow);
+    warn(`Incomplete scan: ${unreadSummary(errors)}, so the score covers only the files that were read.`);
   }
   push();
 
@@ -330,13 +342,17 @@ export function renderTerminal(result, { color = false, verbose = false, html = 
       if (room >= 16) push(`  ${client} ${shortPath(cfg.source.path, Math.min(56, room))}  ${style(status)}`);
       else { push(`  ${client} ${shortPath(cfg.source.path, W - 2 - 16)}`); para('    ', status, style); }
     }
+    for (const e of missingPaths) warn(`path not found: ${shortPath(e.path)}`);
     push();
   } else {
-    for (const cfg of configs.filter((x) => x.error)) para('  ', `! could not read ${shortPath(cfg.source.path)}: ${safe(cfg.error)}`, c.yellow);
+    for (const cfg of configs.filter((x) => x.error)) warn(`could not read ${shortPath(cfg.source.path)}: ${safe(cfg.error)}`);
+    for (const e of missingPaths) warn(`path not found: ${shortPath(e.path)}`);
   }
   if (liveErrors?.length) {
-    para('  ', `! could not list tools for ${liveErrors.map((e) => `${safe(e.server)} (${safe(e.error)})`).join(', ')}`, c.yellow);
+    warn(`could not list tools for ${liveErrors.map((e) => `${safe(e.server)} (${safe(e.error)})`).join(', ')}`);
   }
+  // Warnings above end with a blank line before the tips.
+  if (L[L.length - 1] !== '') push();
   const tips = [];
   if (findings.length && !verbose) tips.push('-v  show each finding in its config file, with the fix');
   if (!html) tips.push('--html  write a report you can open in a browser');

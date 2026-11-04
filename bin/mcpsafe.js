@@ -29,6 +29,8 @@ Options
   --home <dir>          Treat <dir> as the home directory
   --connect             Start each server and check its tool descriptions
                         for hidden instructions (runs the servers!)
+  --timeout <seconds>   How long --connect waits for each server (default 20).
+                        Up to 4 servers are checked at the same time
   --tools <file>        Check tool descriptions from a saved tools/list
                         response or tools array (can be repeated)
   --html [file.html]    Write an HTML report (default: mcpsafe-report.html).
@@ -134,7 +136,7 @@ function main() {
       args,
       allowPositionals: true,
       options: {
-        'no-home': { type: 'boolean' }, home: { type: 'string' }, connect: { type: 'boolean' },
+        'no-home': { type: 'boolean' }, home: { type: 'string' }, connect: { type: 'boolean' }, timeout: { type: 'string' },
         tools: { type: 'string', multiple: true }, html: { type: 'string' }, sarif: { type: 'string' }, markdown: { type: 'string' },
         json: { type: 'boolean' }, 'fail-on': { type: 'string' }, 'min-score': { type: 'string' },
         ignore: { type: 'string', multiple: true }, verbose: { type: 'boolean', short: 'v' }, 'no-color': { type: 'boolean' },
@@ -155,6 +157,8 @@ function main() {
     for (const r of rules) console.log(`${r.id}  ${r.severityLabel.padEnd(w)}  ${r.title}`);
     return Promise.resolve(0);
   }
+  // Severities are accepted in any case, as rule ids in --ignore are: --fail-on High.
+  if (v['fail-on'] !== undefined) v['fail-on'] = v['fail-on'].trim().toLowerCase();
   if (v['fail-on'] && !FAIL_ON.includes(v['fail-on'])) {
     console.error(`mcpsafe: --fail-on must be one of ${FAIL_ON.join(', ')}`);
     return Promise.resolve(2);
@@ -165,6 +169,15 @@ function main() {
     return Promise.resolve(2);
   }
   const gated = !!v['fail-on'] || minScore.value !== undefined;
+  let timeoutMs;
+  if (v.timeout !== undefined) {
+    const t = /^\s*\d+(\.\d+)?\s*$/.test(v.timeout) ? Number(v.timeout) : NaN;
+    if (!(t > 0 && t <= 3600)) {
+      console.error(`mcpsafe: --timeout must be a number of seconds above 0 and at most 3600, got "${safe(v.timeout)}"`);
+      return Promise.resolve(2);
+    }
+    timeoutMs = Math.round(t * 1000);
+  }
 
   // A mistyped --home would scan nothing and pass every gate.
   if (v.home !== undefined) {
@@ -199,6 +212,7 @@ function main() {
     home: v.home ? path.resolve(v.home) : undefined,
     includeHome,
     connect: v.connect,
+    timeoutMs,
     toolsFiles: v.tools,
     ignore: (v.ignore || []).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean),
     onProgress: (m) => { if (process.stderr.isTTY && !v.json) process.stderr.write(`\r\x1b[2K  ${safe(m)}`); },
@@ -268,9 +282,17 @@ function main() {
     }
     if (v.markdown) output('Markdown summary', v.markdown, (abs) => { fs.appendFileSync(abs, renderMarkdown(result)); return abs; });
 
+    // A failed gate says which one, so a red CI job can be read without the docs.
     let code = 0;
-    if (v['fail-on'] && atOrAbove(result.findings, v['fail-on']).length) code = 1;
-    if (minScore.value !== undefined && result.score.value < minScore.value) code = 1;
+    const over = v['fail-on'] ? atOrAbove(result.findings, v['fail-on']).length : 0;
+    if (over) {
+      console.error(`mcpsafe: ${over} finding${over === 1 ? ' is' : 's are'} at or above --fail-on ${v['fail-on']}`);
+      code = 1;
+    }
+    if (minScore.value !== undefined && result.score.value < minScore.value) {
+      console.error(`mcpsafe: score ${result.score.value} is below --min-score ${minScore.value}`);
+      code = 1;
+    }
 
     // An incomplete scan must not pass a gate.
     const errors = result.errors || [];
@@ -284,6 +306,15 @@ function main() {
     }
     if (missing.length || (unreadable.length && gated) || writeFailed) code = 2;
     return code;
+  });
+}
+
+// A reader that closes the pipe early (mcpsafe --json | head) has all it wants. That is not
+// a crash, and must not exit 1, which means a gate failed.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (e) => {
+    if (e?.code !== 'EPIPE') throw e;
+    process.exit(process.exitCode ?? 0);
   });
 }
 

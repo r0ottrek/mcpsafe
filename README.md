@@ -39,13 +39,14 @@ The examples use the short name. Install it once with `npm install -g github:r0o
 | `--no-home` | Skip user-level configs; scan only the given paths, or the current folder if none are given |
 | `--home <dir>` | Treat `<dir>` as the home directory. It must be an existing folder |
 | `--connect` | Start each server and check its tool descriptions (runs the servers) |
+| `--timeout <seconds>` | How long `--connect` waits for each server, 20 by default. Up to 4 servers are checked at the same time |
 | `--tools <file>` | Check tool descriptions from a saved file; can be repeated |
 | `--html [file.html]` | Write an HTML report, `mcpsafe-report.html` by default. The next argument is taken as the file name only if it ends in `.html` or `.htm`, so `mcpsafe --html .mcp.json` scans `.mcp.json`. Use `--html=<file>` for any other name; an existing file of another name is replaced only if it is an earlier mcpsafe report |
 | `--sarif <file>` | Write SARIF 2.1.0 |
 | `--markdown <file>` | Append a Markdown summary |
 | `--json` | Print results as JSON |
-| `--fail-on <severity>` | Exit 1 if a finding is at or above `critical`, `high`, `medium` or `low` |
-| `--min-score <n>` | Exit 1 if the score is below `n`, a number from 0 to 100 |
+| `--fail-on <severity>` | Exit 1 if a finding is at or above `critical`, `high`, `medium` or `low` (any case). The reason is printed to stderr |
+| `--min-score <n>` | Exit 1 if the score is below `n`, a number from 0 to 100. The reason is printed to stderr |
 | `--ignore <ids>` | Skip rules, e.g. `MCS003,MCS004`; can be repeated. An unknown rule ID gets a warning |
 | `-v`, `--verbose` | Show each finding in its config file, with the fix |
 | `--no-color` | Disable colors. `NO_COLOR` and `FORCE_COLOR=0` do the same |
@@ -93,7 +94,7 @@ Where a rule gives a range, the severity depends on the finding, so check the co
 | MCS007 | low to high | Servers that offer shell or command execution. High for a shell server package or a coding agent run as a server, medium when only the server's name suggests a shell, low for a server launched through an inline `sh -c` script |
 | MCS008 | high | Filesystem access to `/`, `~`, `C:\` or a whole home directory, including Docker mounts |
 | MCS009 | high | Containers with `--privileged`, host networking or PID namespace, extra capabilities, or the Docker socket |
-| MCS010 | critical | A launch command that pipes a downloaded script into a shell |
+| MCS010 | critical | A launch command that downloads a script and runs it, such as `curl ... \| sh`, `sh -c "$(curl ...)"`, `source <(curl ...)`, `curl ... \| python3 -` or PowerShell `iex (irm ...)` |
 | MCS011 | medium to high | Auto-approval: `autoApprove`, `alwaysAllow`, `trust: true`, broad `mcp__` allow rules, `bypassPermissions`. Medium for a list of named tools or servers, high when everything is approved: `trust: true`, `bypassPermissions`, a `*` wildcard or `mcp__*` |
 | MCS012 | medium | Claude Code's `enableAllProjectMcpServers`, which lets any cloned repository start servers |
 | MCS013 | medium to high | Package names one or two characters away from a popular MCP server, or its name without the @ (which npx reads as a GitHub repository): high. A popular server's name with its npm scope dropped (`stripe-mcp` for `@stripe/mcp`): medium |
@@ -145,7 +146,7 @@ jobs:
           sarif_file: mcpsafe.sarif
 ```
 
-Inputs: `path` (default `.`), `fail-on` (default `high`, or `none`), `min-score`, `ignore`, `sarif` (default `mcpsafe.sarif`) and `html`. Outputs: `score`, `grade`, `findings`, `complete` (`false` when a config could not be read or parsed, so the score covers only the files that were read) and `sarif`. A `path` that does not exist fails the job, and a config that cannot be parsed gets an error annotation and fails the job while `fail-on` or `min-score` is set.
+Inputs: `path` (default `.`), `fail-on` (default `high`, or `none`; any case), `min-score`, `ignore`, `sarif` (default `mcpsafe.sarif`) and `html`. Outputs: `score`, `grade` (both empty when nothing could be scanned, such as a `path` that does not exist), `findings`, `complete` (`false` when a config could not be read or parsed, so the score covers only the files that were read) and `sarif`. A `path` that does not exist fails the job, and a config that cannot be parsed gets an error annotation and fails the job while `fail-on` or `min-score` is set.
 
 Outside the action, `--fail-on <severity>` and `--min-score <n>` set the exit code, and `--ignore MCS003,MCS004` skips rules.
 

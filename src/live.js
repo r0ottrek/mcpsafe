@@ -28,6 +28,26 @@ const OLDEST_PROTOCOL = '2024-11-05';
 const VERSION_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
 const CLIENT = { name: 'mcpsafe', version: '1.0.0' };
 export const MAX_PAGES = 100;
+// Limits on what one server can make mcpsafe do or hold.
+export const MAX_TOOLS = 5000; // tools read from one server
+export const MAX_SERVER_REQUESTS = 1000; // requests (pings) the server sends us in one session
+export const MAX_LINE = 50 * 1024 * 1024; // one stdio message, in characters
+const MAX_REPLY_BACKLOG = 1024 * 1024; // bytes of replies a stdio server has not read yet
+const MAX_REPLIES_IN_FLIGHT = 4; // HTTP replies to server requests sent at once
+const FLOOD = `the server sent more than ${MAX_SERVER_REQUESTS} requests of its own, so mcpsafe stopped talking to it`;
+
+// Answers the requests a server sends (ping) with a bounded number of replies in flight.
+// Past the cap a reply is dropped; past MAX_SERVER_REQUESTS the session is failed.
+function replier(send, onFlood) {
+  let inFlight = 0;
+  let total = 0;
+  return (msg) => {
+    if (++total > MAX_SERVER_REQUESTS) { if (total === MAX_SERVER_REQUESTS + 1) onFlood(new Error(FLOOD)); return; }
+    if (inFlight >= MAX_REPLIES_IN_FLIGHT) return;
+    inFlight++;
+    Promise.resolve().then(() => send(msg)).catch(() => {}).finally(() => { inFlight--; });
+  };
+}
 
 function withTimeout(promise, ms, label) {
   let t;
@@ -319,22 +339,34 @@ export async function* sseEvents(body) {
   const dec = new TextDecoder();
   let buf = '';
   let data = [];
+  let dataLen = 0;
   let event = '';
   let done = false;
+  // Where the search for the next line end starts: text already searched is not searched
+  // again, so a long line arriving in many chunks is read in linear time.
+  let from = 0;
+  const EOL = /\r\n|\r|\n/g;
   try {
     while (!done) {
       const r = await reader.read();
       if (r.done) { done = true; buf += dec.decode(); buf += '\n\n'; } else buf += dec.decode(r.value, { stream: true });
       for (;;) {
-        const m = /\r\n|\r|\n/.exec(buf);
-        if (!m) break;
+        EOL.lastIndex = from;
+        const m = EOL.exec(buf);
+        if (!m) {
+          from = buf.length;
+          if (buf.length + dataLen > MAX_LINE) throw new Error(`the server sent an event longer than ${MAX_LINE / 1024 / 1024} MB`);
+          break;
+        }
         // A lone \r at the end may be the first half of \r\n.
-        if (m[0] === '\r' && m.index === buf.length - 1 && !done) break;
+        if (m[0] === '\r' && m.index === buf.length - 1 && !done) { from = m.index; break; }
+        from = 0;
         const line = buf.slice(0, m.index);
         buf = buf.slice(m.index + m[0].length);
         if (line === '') {
           if (data.length) yield { event: event || 'message', data: data.join('\n') };
           data = [];
+          dataLen = 0;
           event = '';
           continue;
         }
@@ -343,7 +375,7 @@ export async function* sseEvents(body) {
         const field = c < 0 ? line : line.slice(0, c);
         let val = c < 0 ? '' : line.slice(c + 1);
         if (val.startsWith(' ')) val = val.slice(1);
-        if (field === 'data') data.push(val);
+        if (field === 'data') { data.push(val); dataLen += val.length; }
         else if (field === 'event') event = val;
       }
     }
@@ -427,22 +459,47 @@ function stdioSession(server, prep) {
     if (exitErr || closed || !child.stdin.writable) return;
     try { child.stdin.write(`${JSON.stringify(msg)}\n`); } catch { /* reported by exit */ }
   };
-  let buf = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
-    buf += chunk;
-    let i;
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i).trim();
-      buf = buf.slice(i + 1);
-      if (line) dispatch(parseJson(line), pending, write);
-    }
-  });
   const fail = (e) => {
     if (!exitErr) exitErr = e;
     for (const r of pending.values()) r({ error: { message: exitErr.message } });
     pending.clear();
   };
+  // Replies to the server's own requests. A server that sends requests but never reads
+  // its stdin would make the replies pile up in memory, so that ends the session.
+  let serverRequests = 0;
+  const reply = (msg) => {
+    if (exitErr) return;
+    if (++serverRequests > MAX_SERVER_REQUESTS) { fail(new Error(FLOOD)); return; }
+    if (child.stdin.writableLength > MAX_REPLY_BACKLOG) { fail(new Error('the server sent requests but does not read the replies, so mcpsafe stopped talking to it')); return; }
+    write(msg);
+  };
+  // Lines are found by searching each chunk once and joining the parts at the end,
+  // so a long message is read in linear time. A message over MAX_LINE ends the session.
+  let parts = [];
+  let partLen = 0;
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    if (exitErr) return;
+    let start = 0;
+    let i;
+    while ((i = chunk.indexOf('\n', start)) >= 0) {
+      const piece = chunk.slice(start, i);
+      const line = (parts.length ? parts.join('') + piece : piece).trim();
+      parts = [];
+      partLen = 0;
+      start = i + 1;
+      if (line) dispatch(parseJson(line), pending, reply);
+      if (exitErr) return;
+    }
+    if (start < chunk.length) {
+      parts.push(chunk.slice(start));
+      partLen += chunk.length - start;
+      if (partLen > MAX_LINE) {
+        parts = [];
+        fail(new Error(`the server sent a message longer than ${MAX_LINE / 1024 / 1024} MB`));
+      }
+    }
+  });
   let exitMsg = null;
   child.on('error', fail);
   child.on('exit', (code, signal) => {
@@ -523,9 +580,11 @@ function httpSession(server, prep) {
     sessionId = res.headers.get('mcp-session-id') || sessionId;
     return res;
   };
-  const reply = (msg) => { post(msg).then((r) => r.body?.cancel()).catch(() => {}); };
+  let flood = null;
+  const reply = replier((msg) => post(msg).then((r) => r.body?.cancel()), (e) => { flood = e; });
   return {
     async request(method, params) {
+      if (flood) throw flood;
       const id = nextId++;
       const res = await post({ jsonrpc: '2.0', id, method, params });
       if (!res.ok) { res.body?.cancel().catch(() => {}); throw httpError(res.status); }
@@ -539,10 +598,12 @@ function httpSession(server, prep) {
           if (ev.event !== 'message') continue;
           dispatch(parseJson(ev.data), pending, reply);
           if (found) break;
+          if (flood) throw flood;
         }
       } else {
         dispatch(parseJson(await res.text()), pending, reply);
       }
+      if (flood) throw flood;
       if (!found) throw new Error('no response');
       return settle(found);
     },
@@ -576,7 +637,7 @@ function sseSession(server, prep) {
     res.body?.cancel().catch(() => {});
     if (!res.ok) throw httpError(res.status);
   };
-  const reply = (msg) => { post(msg).catch(() => {}); };
+  const reply = replier(post, (e) => { fail(e); ac.abort(); });
   (async () => {
     const res = await fetch(prep.url, { headers: { accept: 'text/event-stream', ...prep.headers }, signal: ac.signal });
     if (!res.ok) { res.body?.cancel().catch(() => {}); throw httpError(res.status); }
@@ -681,7 +742,10 @@ export async function listTools(server, timeoutMs = 20000) {
     for (let page = 0; ; page++) {
       if (page >= MAX_PAGES) { warning = `listed only the first ${MAX_PAGES} pages of tools; the rest were not checked`; break; }
       const r = await session.request('tools/list', cursor ? { cursor } : {});
-      if (Array.isArray(r?.tools)) tools.push(...r.tools.filter((t) => t && typeof t === 'object'));
+      if (Array.isArray(r?.tools)) {
+        for (const t of r.tools) if (t && typeof t === 'object' && tools.length <= MAX_TOOLS) tools.push(t);
+        if (tools.length > MAX_TOOLS) { tools.length = MAX_TOOLS; warning = `listed only the first ${MAX_TOOLS} tools; the rest were not checked`; break; }
+      }
       cursor = r?.nextCursor;
       if (cursor == null || cursor === '') break;
       if (seen.has(cursor)) { warning = 'the server repeated a page of its tool list; later pages were not checked'; break; }

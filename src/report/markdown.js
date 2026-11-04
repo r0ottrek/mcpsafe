@@ -2,10 +2,12 @@
 import path from 'node:path';
 import { RULES, SEVERITIES } from '../rules.js';
 import { impactByRule } from '../score.js';
-import { safe } from './text.js';
+import { safe, unreadSummary } from './text.js';
 
 const VERDICT = { A: 'Looks good', B: 'Minor issues', C: 'Needs attention', D: 'At risk', F: 'High risk' };
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+// "a, b and c"
+const list = (items) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 // Text from configs and servers (server names, package names, paths) is shown
 // as literal text. It cannot add HTML, links or images to the summary, close
@@ -28,15 +30,25 @@ export function renderMarkdown(result, { root = process.cwd() } = {}) {
   const { score, findings, configs, servers, toolsScanned } = result;
   const errors = result.errors ?? configs.filter((c) => c.error).map((c) => ({ path: c.source.path, error: c.error }));
   const L = [];
+  const rel = (p) => (p ? path.relative(root, p).replace(/\\/g, '/') || '.' : '');
+  if (!configs.length && !toolsScanned && errors.length) {
+    // Nothing was read, so there is no score to show: a grade here would read as a pass.
+    const missing = errors.filter((e) => e.missing);
+    L.push('### mcpsafe: nothing was scanned');
+    L.push('');
+    if (missing.length) L.push(`Path not found: ${missing.map((e) => code(rel(e.path))).join(', ')}.`);
+    for (const e of errors.filter((x) => !x.missing)) L.push(`Could not read ${code(rel(e.path))}: ${cell(e.error)}.`);
+    return `${L.join('\n')}\n`;
+  }
   L.push(`### mcpsafe: ${score.value}/100, grade ${score.grade}`);
   L.push('');
   const scanned = configs.length || !toolsScanned
-    ? `Scanned ${plural(configs.length, 'config file')} and ${plural(servers, 'MCP server')}${toolsScanned ? `, and ${plural(toolsScanned, 'tool description')}` : ''}.`
+    ? `Scanned ${list([plural(configs.length, 'config file'), plural(servers, 'MCP server'), ...(toolsScanned ? [plural(toolsScanned, 'tool description')] : [])])}.`
     : `No config files scanned. Checked ${plural(toolsScanned, 'tool description')} from a tools file.`;
   L.push(`${errors.length ? 'Incomplete' : VERDICT[score.grade]}. ${scanned}`);
   L.push('');
   if (errors.length) {
-    L.push(`> **Incomplete scan:** ${plural(errors.length, 'config file')} could not be read or parsed, so the score covers only the files that were read.`);
+    L.push(`> **Incomplete scan:** ${unreadSummary(errors)}, so the score covers only the files that were read.`);
     L.push('');
   }
   if (!findings.length) {
@@ -48,15 +60,15 @@ export function renderMarkdown(result, { root = process.cwd() } = {}) {
   L.push('| Severity | Finding | Server | Location |');
   L.push('|---|---|---|---|');
   for (const f of findings) {
-    const rel = f.file ? path.relative(root, f.file).replace(/\\/g, '/') : '';
-    L.push(`| ${f.severity} | **${cell(f.title)}** <sub>${f.id}</sub><br>${cell(f.message)} | ${f.server ? code(f.server) : ''} | ${rel ? code(`${rel}${f.line ? `:${f.line}` : ''}`) : ''} |`);
+    const where = f.file ? path.relative(root, f.file).replace(/\\/g, '/') : '';
+    L.push(`| ${f.severity} | **${cell(f.title)}** <sub>${f.id}</sub><br>${cell(f.message)} | ${f.server ? code(f.server) : ''} | ${where ? code(`${where}${f.line ? `:${f.line}` : ''}`) : ''} |`);
   }
   L.push('');
   const impact = impactByRule(findings);
   const ids = [...new Set(findings.map((f) => f.id))];
   L.push('<details><summary>How to fix</summary>');
   L.push('');
-  for (const id of ids) L.push(`- **${RULES[id].title}**${impact[id] > 0 ? ` (+${impact[id]} points)` : ''}: ${RULES[id].fix}`);
+  for (const id of ids) L.push(`- **${RULES[id].title}**${impact[id] > 0 ? ` (+${plural(impact[id], 'point')})` : ''}: ${RULES[id].fix}`);
   L.push('');
   L.push('</details>');
   return `${L.join('\n')}\n`;

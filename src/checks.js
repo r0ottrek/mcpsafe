@@ -31,7 +31,8 @@ function downgrade(sev) {
   return SEVERITIES[Math.min(i + 1, SEVERITIES.length - 1)];
 }
 
-const isLocalHost = (h) => /^(localhost|127(\.\d+){3}|\[?::1\]?|0\.0\.0\.0|host\.docker\.internal)$/i.test(h);
+// *.localhost is reserved for loopback (RFC 6761). Each label ends in a dot that the class excludes, so this stays linear.
+const isLocalHost = (h) => /^((?:[a-z0-9-]+\.)*localhost\.?|127(\.\d+){3}|\[?::1\]?|0\.0\.0\.0|host\.docker\.internal)$/i.test(h);
 
 // Template forms that README examples use: [YOUR_API_KEY], {API_KEY}, {{TOKEN}}, __TOKEN__.
 const TEMPLATE_VALUE = /^(?:\[[^\]]*\]|\{[^{}]*\}|\{\{[^{}]*\}\}|__[A-Za-z0-9_]+__)$/;
@@ -200,7 +201,13 @@ const HOME_VARIABLES = ['~', '$home', '${home}', '%userprofile%', '%homepath%', 
 
 function broadPath(p) {
   const home = os.homedir();
-  const s = p.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  let s = p.replace(/\\/g, '/');
+  // The server resolves "." and ".." itself: /home/alice/.. is /home and /Users/alice/./ is a home folder.
+  if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(s)) {
+    const drive = /^[A-Za-z]:/.test(s) ? s.slice(0, 2) : '';
+    s = drive + path.posix.normalize(drive ? s.slice(2) : s);
+  }
+  s = s.replace(/\/+$/, '') || '/';
   if (['/', '/Users', '/home', '/root', '..'].includes(s) || HOME_VARIABLES.includes(s.toLowerCase())) return true;
   if (/^[A-Za-z]:\/?$/.test(s)) return true; // C:\ or C:
   if (/^[A-Za-z]:\/Users(\/[^/]+)?$/i.test(s)) return true;
@@ -416,7 +423,12 @@ function checkPackages(ctx) {
     const spec = maskText(p.spec);
     const name = maskText(p.name);
     if (p.kind === 'git' || p.kind === 'url') {
-      if (!p.pinned) out.push(finding('MCS018', ctx, `Launches ${spec} straight from ${p.kind === 'git' ? 'a git repository' : 'a URL'} without a pinned commit.`, { evidence: spec, jsonPath: argPath(s, p.spec) }));
+      // npx playwright/mcp (no @, no github: prefix) is GitHub shorthand that looks like the popular
+      // @playwright/mcp. That is the problem to fix, so it replaces the advice to pin a commit.
+      const bare = p.manager === 'npm' && /^[\w.-]+\/[\w.-]+(?:#.*)?$/.test(p.spec) ? p.spec.split('#')[0] : null;
+      const short = bare ? typosquatMatch(bare, 'npm') : null;
+      if (short?.kind === 'shorthand') out.push(finding('MCS013', ctx, `"${maskText(bare)}" has no @, so npx reads it as the GitHub repository ${maskText(bare)}, not the popular package "${short.popular}".`, { evidence: maskText(bare), jsonPath: argPath(s, p.spec) }));
+      else if (!p.pinned) out.push(finding('MCS018', ctx, `Launches ${spec} straight from ${p.kind === 'git' ? 'a git repository' : 'a URL'} without a pinned commit.`, { evidence: spec, jsonPath: argPath(s, p.spec) }));
       continue;
     }
     if (p.manager === 'docker') {
@@ -464,6 +476,72 @@ function agentServer(base, args, pkgs) {
   return null;
 }
 
+// ---- MCS010: download and run ----
+// Every pattern here is anchored on a short keyword and has no nested or
+// adjacent overlapping quantifiers, so it stays linear on long input.
+const DOWNLOADER = /\b(?:curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b/i;
+// sudo flags that take a value: sudo -u root bash.
+const SUDO_VALUE = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-r', '-t', '-T', '-U', '--user', '--group', '--host', '--prompt', '--chdir']);
+const SHELL_WORD = /^(?:(?:ba|z|da|k)?sh|iex|invoke-expression)$/i;
+const SCRIPT_INTERPRETER = /^(?:python[\d.]*|node(?:js)?|perl|ruby|php)$/i;
+// An interpreter flag that means the script is not read from stdin (python -c, -m; node -e; perl -ne).
+const INLINE_CODE_FLAG = /^-(?:[a-z]*[cemnp]|-eval|-print|-require|-import)$/i;
+// sh -c "$(curl ...)", bash <(curl ...), source <(wget ...), eval "$(curl ...)", python3 -c "$(curl ...)".
+const SUBST_RUN = /(?:^|[\s;&|("'])(?:(?:ba|z|da|k)?sh|source|\.|eval|python[\d.]*|node|perl|ruby)\s+(?:-[a-z]+\s+)?["']?(?:\$\(|<\(|`)\s*(?:curl|wget)\b/i;
+// iex (irm URL), IEX (New-Object Net.WebClient).DownloadString(URL)
+const IEX_DOWNLOAD = /\b(?:iex|invoke-expression)[\s(]*(?:irm|iwr|invoke-webrequest|invoke-restmethod|new-object\s+(?:system\.)?net\.webclient)\b/i;
+
+// A word without the closing quotes and parentheses after it. A loop, since /["')]+$/
+// backtracks on a long run of them that does not reach the end.
+function trimClosers(w) {
+  let end = w.length;
+  while (end > 0 && (w[end - 1] === '"' || w[end - 1] === "'" || w[end - 1] === ')')) end--;
+  return w.slice(0, end);
+}
+
+// The command that reads a pipe's output: the part after "|", with sudo and env stripped.
+function pipeReader(segment) {
+  const words = segment.replace(/^[\s"'(]+/, '').split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i].toLowerCase();
+    if (w === 'sudo' || w === 'env' || w === 'exec' || w === 'command') {
+      i += 1;
+      while (i < words.length && words[i].startsWith('-')) i += SUDO_VALUE.has(words[i]) ? 2 : 1;
+    } else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i += 1;
+    else break;
+  }
+  return words.slice(i);
+}
+
+/** True when a launch command line downloads code and runs it. */
+export function runsDownloadedScript(line) {
+  const text = String(line ?? '');
+  if (SUBST_RUN.test(text) || IEX_DOWNLOAD.test(text)) return true;
+  const parts = text.split('|');
+  for (let i = 1; i < parts.length; i++) {
+    // "||" leaves an empty part: it is "or", not a pipe.
+    if (!parts[i].trim() || !parts[i - 1].trim()) continue;
+    const [cmd, ...rest] = pipeReader(parts[i]);
+    if (!cmd) continue;
+    const name = trimClosers(cmd).replace(/^.*\//, '');
+    if (/^(?:iex|invoke-expression)$/i.test(name)) return true;
+    if (!DOWNLOADER.test(parts[i - 1])) continue;
+    if (SHELL_WORD.test(name)) return true;
+    if (SCRIPT_INTERPRETER.test(name)) {
+      // curl ... | python3 - runs the download; curl ... | python3 -m json.tool or | node script.js only reads it.
+      let stdin = true;
+      for (const a of rest) {
+        const w = trimClosers(a);
+        if (w === '-') break;
+        if (!w.startsWith('-') || INLINE_CODE_FLAG.test(w)) { stdin = false; break; }
+      }
+      if (stdin) return true;
+    }
+  }
+  return false;
+}
+
 function checkShell(ctx) {
   const s = ctx.server;
   const { base, args } = effectiveCommand(s);
@@ -471,9 +549,9 @@ function checkShell(ctx) {
   // Masked argument by argument, so a value after a --flag is hidden too. Only built when a finding uses it.
   const shown = () => maskArgv([s.command, ...s.args].filter(Boolean)).join(' ').slice(0, 160);
   const out = [];
-  // MCS010: curl | sh
-  if (/(curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|\|\s*(iex|invoke-expression)\b|(ba)?sh\s+<\(\s*curl/i.test(joined)) {
-    out.push(finding('MCS010', ctx, 'The launch command pipes a downloaded script into a shell.', { evidence: shown() }));
+  // MCS010: curl | sh, and the other ways an installer one-liner runs downloaded code.
+  if (runsDownloadedScript(joined)) {
+    out.push(finding('MCS010', ctx, 'The launch command downloads a script and runs it.', { evidence: shown() }));
   }
   const pkgs = launchedPackages(s);
   const shellPkg = pkgs.find((p) => SHELL_PACKAGES.test(p.name));
@@ -790,6 +868,10 @@ const OWN_CONTENT = /^(?:(?:new|file|note|page|post|message|updated|full)[_-]?)?
 // A sensitive file that is the tool's own credential config or an exclusion, not the payload:
 // "with credentials from ~/.pypirc", "configure the token in ~/.pypirc", "excluding .env files".
 const TARGET_ASIDE = /(?:\b(?:excluding|except(?:\s+for)?|other\s+than|but\s+not|not\s+including|skipping|never\s+(?:include|includes|including|upload|uploads|uploading|send|sends|sending|read|reads|reading))\b[^.;\n]{0,50}|\b(?:credentials?|tokens?|auth(?:entication)?|passwords?|login|api\s+keys?|config(?:uration)?)\s+(?:(?:are|is)\s+)?(?:(?:read|loaded|taken|stored|saved|configured|kept)\s+)?(?:from|in)\s+|\b(?:configure|set\s+up|store|save|add|define)\b[^.;\n]{0,40}\bin\s+)['"\x60]?(?:[~\w.$%-]*[/\\])*$/i;
+// A shell startup file named only to reload PATH after an install: "source ~/.bashrc",
+// ". ~/.zshrc", "adds bun to PATH in your ~/.bashrc". Run on the 60 characters before the file.
+const SHELL_RC = /^\.(?:bashrc|zshrc)$/i;
+const RC_RELOAD = /(?:\b(?:source|reload)\s+|(?:^|[\s;&(`'"])\.\s+|\bPATH\b[^.;\n]{0,40}?\b(?:in|to)\s+(?:your\s+|the\s+)?)['"`]?(?:~|\$HOME|\$\{HOME\})?[/\\]?$/i;
 // Every pattern here must stay linear in its input: gaps are bounded and stop at sentence
 // ends, a tag's attributes stop at the next "<", and a comment body stops at "-->" or "<!--".
 export const POISON = [
@@ -1176,6 +1258,8 @@ function findSignals(segments, nested = false, allTheft = false, props = []) {
       if (credentialName(m.groups?.param) || OWN_CONTENT.test(m.groups?.param || '-')) continue;
       if (kind === 'exfil' && /\b(?:contents?|text|output)\s+of\s+(?:the\s+|a\s+|your\s+)?(?:new|updated|edited|modified|rewritten|replacement|final|generated)\b/i.test(m[0])) continue;
       if (kind === 'override' && OVERRIDE_CONTEXT.test(text.slice(Math.max(0, m.index - 80), m.index))) continue;
+      // "then restart the shell or source ~/.bashrc" after an installer one-liner reloads PATH; nothing is read or sent.
+      if (kind === 'target' && SHELL_RC.test(m[0]) && RC_RELOAD.test(norm.slice(Math.max(0, m.index - 60), m.index))) continue;
       record(m.index, m[0].length, label, kind, kind === 'target' && TARGET_ASIDE.test(norm.slice(Math.max(0, m.index - 60), m.index)));
     }
     // Comments come right after hidden tags, so the reasons keep their usual order.
@@ -1411,6 +1495,92 @@ function toolRefPattern(name) {
   ].join('|'));
 }
 
+// A name or text reduced to its ASCII letters and digits, lower-cased: send_email, sendEmail,
+// SendEmail and "send email tool" all contain "sendemail". toLowerCase() and the filter work
+// one character at a time, so every way toolRefPattern() can match a name in a text gives a
+// piece of the text whose key is the name's key, found inside the text's key.
+const squash = (s) => s.toLowerCase().replace(/[^a-z\d]+/g, '');
+
+// Finds which tool names a text could refer to without running every name's pattern on every
+// text, which is quadratic in the number of tools. The name keys go into one Aho-Corasick
+// automaton, so one pass over a text's key finds every name key inside it. The names found
+// are then confirmed with their real pattern.
+function toolNameIndex(serverOf) {
+  const names = [...serverOf.keys()];
+  // Node 0 is the root. A transition is stored under node * 128 + character code.
+  const next = new Map();
+  const kids = [[]];
+  const fail = [0];
+  const ends = [null]; // the name indexes whose key ends at this node
+  const link = [0]; // the nearest node on the fail chain that ends a key
+  // A name with no ASCII letters or digits has no key: its pattern only matches the literal name.
+  const literal = [];
+  names.forEach((n, i) => {
+    const key = squash(n);
+    if (!key) { literal.push(i); return; }
+    let node = 0;
+    for (let k = 0; k < key.length; k++) {
+      const c = key.charCodeAt(k);
+      let to = next.get(node * 128 + c);
+      if (to === undefined) {
+        to = kids.length;
+        next.set(node * 128 + c, to);
+        kids.push([]);
+        fail.push(0);
+        ends.push(null);
+        link.push(0);
+        kids[node].push(c);
+      }
+      node = to;
+    }
+    (ends[node] ||= []).push(i);
+  });
+  const step = (node, c) => {
+    for (;;) {
+      const to = next.get(node * 128 + c);
+      if (to !== undefined) return to;
+      if (node === 0) return 0;
+      node = fail[node];
+    }
+  };
+  const queue = [];
+  for (const c of kids[0]) queue.push(next.get(c));
+  for (let q = 0; q < queue.length; q++) {
+    const node = queue[q];
+    for (const c of kids[node]) {
+      const child = next.get(node * 128 + c);
+      const f = step(fail[node], c);
+      fail[child] = f === child ? 0 : f;
+      link[child] = ends[fail[child]] ? fail[child] : link[fail[child]];
+      queue.push(child);
+    }
+  }
+  const seen = new Array(kids.length).fill(0);
+  let stamp = 0;
+  const patterns = new Map();
+  return {
+    candidates(text) {
+      stamp++;
+      const hits = literal.filter((i) => text.includes(names[i]));
+      const key = squash(text);
+      let node = 0;
+      for (let k = 0; k < key.length; k++) {
+        node = step(node, key.charCodeAt(k));
+        // Each node is reported once per text; the nodes after it on the chain were reported with it.
+        for (let o = ends[node] ? node : link[node]; o && seen[o] !== stamp; o = link[o]) {
+          seen[o] = stamp;
+          hits.push(...ends[o]);
+        }
+      }
+      return hits.sort((a, b) => a - b).map((i) => names[i]);
+    },
+    pattern(name) {
+      if (!patterns.has(name)) patterns.set(name, toolRefPattern(name));
+      return patterns.get(name);
+    },
+  };
+}
+
 const IMPERATIVE = /\b(?:must|always|never|instead|make sure|change|set|replace|redirect|append|add|bcc|cc|forward|send)\b/i;
 
 function sentenceAround(text, start, end) {
@@ -1447,6 +1617,7 @@ export function checkTools(toolSets, serverByName = {}, known = null) {
   // A live server can send anything as a name; only real strings take part in name matching.
   const named = (t) => typeof t?.name === 'string' && t.name !== '';
   for (const set of toolSets) for (const t of set.tools) if (named(t) && !serverOf.has(t.name)) serverOf.set(t.name, set.server);
+  const refIndex = toolNameIndex(serverOf);
 
   for (const set of toolSets) {
     const srv = set.srv || serverByName[set.server] || { name: set.server, client: null, file: set.file || null, jsonPath: null };
@@ -1471,9 +1642,10 @@ export function checkTools(toolSets, serverByName = {}, known = null) {
       if (named(t)) {
         const prose = normalizeForMatch(segments.filter((s) => s.kind === 'prose').map((s) => s.text).join('\n')).norm;
         const urgent = ['override', 'conceal', 'exfil', 'steal', 'inject', 'emph', 'encoded', 'beacon'].some((x) => hits.some((h) => h.kind === x));
-        for (const [other, otherServer] of serverOf) {
+        for (const other of refIndex.candidates(prose)) {
           if (own.has(other) || other.length < 4) continue;
-          const m = toolRefPattern(other).exec(prose);
+          const otherServer = serverOf.get(other);
+          const m = refIndex.pattern(other).exec(prose);
           if (!m) continue;
           refers = true;
           const sentence = sentenceAround(prose, m.index, m.index + m[0].length);

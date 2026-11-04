@@ -7,6 +7,7 @@ import { configSecrets, snippet } from '../locate.js';
 import { maskArgv, maskString } from '../mask.js';
 import { impactByRule } from '../score.js';
 import { launchedPackages, effectiveCommand } from '../packages.js';
+import { unreadSummary } from './text.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
@@ -96,7 +97,9 @@ export function renderHtml(result) {
   // Config files that could not be read or parsed; the CLI lists them in result.errors.
   const errors = result.errors ?? configs.filter((c) => c.error).map((c) => ({ path: c.source.path, error: c.error }));
   const incomplete = errors.length > 0;
-  const incompleteText = `The scan is incomplete: ${plural(errors.length, 'config file')} could not be read or parsed, so this score covers only the files that were read.`;
+  // Only missing or unreadable inputs: there is no score, and a grade would read as a pass.
+  const nothingRead = incomplete && !configs.length && !toolsScanned;
+  const incompleteText = `The scan is incomplete: ${unreadSummary(errors)}, so this score covers only the files that were read.`;
   const allServers = configs.flatMap((c) => c.servers);
   const clients = [...new Set(configs.map((c) => c.source.client))];
   const impact = impactByRule(findings);
@@ -107,7 +110,7 @@ export function renderHtml(result) {
   const countWords = SEVERITIES.filter((s) => score.counts[s]).map((s) => `${score.counts[s]} ${s}`);
   const listText = countWords.length > 1 ? `${countWords.slice(0, -1).join(', ')} and ${countWords.at(-1)}` : countWords[0];
   const verdict = incomplete ? incompleteText : VERDICT[score.grade];
-  const summary = findings.length
+  const summary = nothingRead ? `Nothing could be checked: ${unreadSummary(errors)}.` : findings.length
     ? `${cap(words(findings.length))} finding${findings.length === 1 ? '' : 's'}: ${listText}. ${verdict}`
     : `No findings. ${verdict}`;
 
@@ -159,7 +162,7 @@ export function renderHtml(result) {
       f.file ? ['File', `<code>${esc(displayPath(f.file))}${f.line ? `:${f.line}` : ''}</code>`] : null,
       f.jsonPath && !f.jsonPath.startsWith('tools.') ? ['Key', `<code>${esc(f.jsonPath)}</code>`] : null,
     ].filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-    const search = [f.id, f.title, f.server, f.client, f.message, displayPath(f.file), visibleText(excerpt)].join(' ').toLowerCase();
+    const search = [f.id, f.title, f.server, f.client, f.message, `${displayPath(f.file) ?? ''}${f.file && f.line ? `:${f.line}` : ''}`, visibleText(excerpt)].join(' ').toLowerCase();
     return `
       <article class="finding" id="f${i + 1}" data-sev="${f.severity}" data-key="${esc(filterKey(f))}" data-search="${esc(search)}">
         <p class="kicker"><span class="sev s-${f.severity}">${cap(f.severity)}</span> <span class="rid">${esc(f.id)}</span></p>
@@ -309,10 +312,10 @@ footer{margin-top:3.5rem;padding-top:.8rem;border-top:1px solid var(--rule);font
     <span class="act"><span>${esc(when)}</span><button type="button" class="link" id="print">Print</button></span>
   </div>
 
-  <h1>Score ${score.value} of 100, grade ${score.grade}</h1>
+  <h1>${nothingRead ? 'Nothing was scanned' : `Score ${score.value} of 100, grade ${score.grade}`}</h1>
   <p class="lead">${esc(summary)}</p>
-  ${incomplete ? `<p class="warn"><strong>Incomplete scan.</strong> ${plural(errors.length, 'config file')} could not be read or parsed. A file that could not be read may hold problems this report does not show.</p>` : ''}
-  ${scale(score.value, score.grade)}
+  ${incomplete ? `<p class="warn"><strong>Incomplete scan.</strong> ${unreadSummary(errors).replace(/^./, (ch) => ch.toUpperCase())}. A file that could not be read may hold problems this report does not show.</p>` : ''}
+  ${nothingRead ? '' : scale(score.value, score.grade)}
   <dl class="facts">
     <dt>Scanned</dt><dd>${configs.length || !toolsScanned ? `${plural(configs.length, 'config file')} containing ${plural(servers, 'MCP server')}` : `No config files. ${plural(toolsScanned, 'tool description')} from a tools file.`}</dd>
     ${incomplete ? `<dt>Incomplete</dt><dd class="s-medium">${esc(errors.map((e) => displayPath(e.path)).join(', '))}</dd>` : ''}
