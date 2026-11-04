@@ -67,6 +67,11 @@ runs:
           const r = require(process.argv[1]);
           const out = [`score=${r.score.value}`, `grade=${r.score.grade}`, `findings=${r.findings.length}`].join("\n");
           require("fs").appendFileSync(process.env.GITHUB_OUTPUT, out + "\n");
+          for (const e of r.errors || []) {
+            const file = require("path").relative(process.cwd(), e.path || "");
+            const msg = String(e.error).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+            console.log(`::error file=${file},title=mcpsafe could not check this config::${msg}`);
+          }
           for (const f of r.findings) {
             const lvl = ["critical", "high"].includes(f.severity) ? "error" : f.severity === "medium" ? "warning" : "notice";
             const file = require("path").relative(process.cwd(), f.file || "");

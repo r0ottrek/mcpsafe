@@ -25,10 +25,42 @@ mcpsafe                      # your user configs, plus the project in the curren
 mcpsafe -v                   # show each finding in its config file, with the fix
 mcpsafe --html               # write mcpsafe-report.html
 mcpsafe ~/code               # search a folder of projects
+mcpsafe ~/.cursor            # a client's config folder works too
+mcpsafe --no-home            # only the project in the current folder
 mcpsafe --connect            # also start each server and check its tool descriptions
 ```
 
 The examples use the short name. Install it once with `npm install -g github:r0ottrek/mcpsafe`, or put `npx github:r0ottrek/mcpsafe` in front of the options instead.
+
+### Options
+
+| Option | Does |
+|---|---|
+| `--no-home` | Skip user-level configs; scan only the given paths, or the current folder if none are given |
+| `--home <dir>` | Treat `<dir>` as the home directory |
+| `--connect` | Start each server and check its tool descriptions (runs the servers) |
+| `--tools <file>` | Check tool descriptions from a saved file; can be repeated |
+| `--html [file.html]` | Write an HTML report, `mcpsafe-report.html` by default. The next argument is taken as the file name only if it ends in `.html` or `.htm`, so `mcpsafe --html .mcp.json` scans `.mcp.json`. Use `--html=<file>` for any other name |
+| `--sarif <file>` | Write SARIF 2.1.0 |
+| `--markdown <file>` | Append a Markdown summary |
+| `--json` | Print results as JSON |
+| `--fail-on <severity>` | Exit 1 if a finding is at or above `critical`, `high`, `medium` or `low` |
+| `--min-score <n>` | Exit 1 if the score is below `n`, a number from 0 to 100 |
+| `--ignore <ids>` | Skip rules, e.g. `MCS003,MCS004`; can be repeated |
+| `-v`, `--verbose` | Show each finding in its config file, with the fix |
+| `--no-color` | Disable colors. `NO_COLOR` and `FORCE_COLOR=0` do the same |
+
+Reports are never written over a config file or a folder.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | The scan finished and no `--fail-on` or `--min-score` check failed |
+| 1 | A finding is at or above `--fail-on`, or the score is below `--min-score` |
+| 2 | Usage error or incomplete scan: a bad option, a path that does not exist, an unreadable `--tools` file, a report that could not be written, or a config file that could not be read or parsed while `--fail-on` or `--min-score` is set |
+
+A config that cannot be read or parsed is listed under `errors` in `--json` output, which then has `complete: false`. Without `--fail-on` or `--min-score` it does not change the exit code, so a broken file in your home directory does not stop a plain scan.
 
 ## Reports
 
@@ -42,7 +74,7 @@ The examples use the short name. Install it once with `npm install -g github:r0o
 
 A server's tool descriptions go to the model verbatim, and you normally never read them. A malicious or compromised server can use them to tell the model to read `~/.ssh/id_rsa` and pass it along as a harmless-looking parameter.
 
-With `--connect`, mcpsafe starts each configured server, lists its tools over MCP (stdio or Streamable HTTP) and checks every tool and parameter description. Because that runs the servers, use it only where that is acceptable. To check a saved `tools/list` response instead, pass it with `--tools file.json`.
+With `--connect`, mcpsafe starts each configured server, lists its tools over MCP (stdio or Streamable HTTP) and checks every tool and parameter description. Because that runs the servers, use it only where that is acceptable. To check a saved `tools/list` response instead, pass it with `--tools file.json`. The file can hold the full JSON-RPC response (`{"jsonrpc": "2.0", "id": 1, "result": {"tools": [...]}}`), just the result (`{"tools": [...]}`), a bare tools array, or a map of servers (`{"server": [tools]}` or `{"server": {"tools": [...]}}`). The first three are named after the file, so two saved responses count as two servers.
 
 <img src="docs/finding.png" width="760" alt="A critical finding in the HTML report: the get_forecast tool description with its hidden instruction to read ~/.ssh/id_rsa highlighted">
 
@@ -109,7 +141,7 @@ jobs:
           sarif_file: mcpsafe.sarif
 ```
 
-Inputs: `path` (default `.`), `fail-on` (default `high`, or `none`), `min-score`, `ignore`, `sarif` (default `mcpsafe.sarif`) and `html`. Outputs: `score`, `grade`, `findings` and `sarif`.
+Inputs: `path` (default `.`), `fail-on` (default `high`, or `none`), `min-score`, `ignore`, `sarif` (default `mcpsafe.sarif`) and `html`. Outputs: `score`, `grade`, `findings` and `sarif`. A `path` that does not exist fails the job, and a config that cannot be parsed gets an error annotation and fails the job while `fail-on` or `min-score` is set.
 
 Outside the action, `--fail-on <severity>` and `--min-score <n>` set the exit code, and `--ignore MCS003,MCS004` skips rules.
 

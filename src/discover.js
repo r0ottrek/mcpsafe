@@ -57,11 +57,25 @@ function exists(p) {
   try { return fs.statSync(p).isFile(); } catch { return false; }
 }
 
+const CONFIG_DIRS = ['.cursor', '.vscode', '.claude', '.gemini', '.roo', '.windsurf'];
+
+// Config files that sit directly in a folder passed by the user, for when
+// that folder is itself a client config folder such as ~/.cursor, ~/.claude
+// or the Claude Desktop folder.
+function rootConfigs(root) {
+  const base = path.basename(root);
+  const files = PROJECT_FILES.filter(([, rel]) => rel.split('/')[0] === base).map(([client, rel]) => [client, rel.split('/').slice(1).join('/')]);
+  if (base.toLowerCase() === 'windsurf') files.push(['Windsurf', 'mcp_config.json']);
+  return files.map(([client, rel]) => ({ client, path: path.join(root, rel), scope: 'project' })).filter((c) => exists(c.path));
+}
+
 // Walk a directory (bounded depth) and return project config files found.
 export function findProjectConfigs(root, maxDepth = 6) {
-  const found = [];
+  const found = rootConfigs(root);
   const walk = (dir, depth) => {
-    for (const [client, rel] of PROJECT_FILES) {
+    // The Claude Desktop file name is distinctive enough to match anywhere,
+    // so a copied app config folder (e.g. AppData/Roaming) is found too.
+    for (const [client, rel] of [...PROJECT_FILES, ['Claude Desktop', 'claude_desktop_config.json']]) {
       const p = path.join(dir, rel);
       if (exists(p)) found.push({ client, path: p, scope: 'project' });
     }
@@ -71,7 +85,7 @@ export function findProjectConfigs(root, maxDepth = 6) {
     for (const e of entries) {
       if (!e.isDirectory() || e.isSymbolicLink() || SKIP_DIRS.has(e.name)) continue;
       // Config folders are matched above; do not descend into them.
-      if (['.cursor', '.vscode', '.claude', '.gemini', '.roo', '.windsurf'].includes(e.name)) continue;
+      if (CONFIG_DIRS.includes(e.name)) continue;
       walk(path.join(dir, e.name), depth + 1);
     }
   };
