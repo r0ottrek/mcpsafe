@@ -53,7 +53,7 @@ export async function scan(o = {}) {
   const ignore = new Set((o.ignore || []).map((x) => x.toUpperCase()));
   findings = sortFindings(findings.filter((f) => !ignore.has(f.id)));
   const textOf = Object.fromEntries(configs.map((c) => [c.source.path, c.text]));
-  for (const f of findings) f.line = lineOf(textOf[f.file], f.jsonPath) ?? lineOf(textOf[f.file], f.serverPath);
+  for (const f of findings) f.line = f.line ?? lineOf(textOf[f.file], f.jsonPath) ?? lineOf(textOf[f.file], f.serverPath);
   return {
     version: VERSION,
     generatedAt: new Date().toISOString(),

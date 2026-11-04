@@ -6,6 +6,7 @@ import { displayPath, POISON } from '../checks.js';
 import { snippet } from '../locate.js';
 import { impactByRule } from '../score.js';
 import { launchedPackages, effectiveCommand } from '../packages.js';
+import { detectSecret, mask, SECRET_PATTERNS } from '../secrets.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
@@ -41,15 +42,51 @@ function markPoison(text) {
   return out + esc(text.slice(pos));
 }
 
-function launcher(s) {
-  if (s.url) {
-    try { const u = new URL(s.url); return `${u.protocol.replace(':', '')}://${u.host}${u.pathname === '/' ? '' : u.pathname}`; } catch { return s.url; }
+const unquote = (t) => t.replace(/^(["'])(.*)\1$/, '$2');
+const hide = (text, det) => text.split(det.match).join(mask(det.match));
+
+// Mask credentials in a command line or other free text: KEY=value
+// assignments, the value after a --flag (or after Bearer), known token
+// formats anywhere, passwords in URLs and credential query parameters.
+export function maskCommand(text) {
+  const parts = String(text ?? '').split(/(\s+)/);
+  let prev = '';
+  for (let i = 0; i < parts.length; i += 2) {
+    const tok = parts[i];
+    if (!tok) continue;
+    const kv = tok.match(/^["']?-{0,2}([A-Za-z_][\w.-]*)=(.+)$/);
+    let det = kv ? detectSecret(unquote(kv[2].replace(/["']$/, '')), kv[1]) : null;
+    if (!det && /^-{1,2}[A-Za-z][\w-]*$/.test(prev)) det = detectSecret(unquote(tok), prev.replace(/^-+/, ''));
+    if (!det && /^(Bearer|Basic|Token)$/i.test(prev)) det = detectSecret(unquote(tok), 'bearer');
+    if (!det) det = detectSecret(unquote(tok), '');
+    if (det) parts[i] = hide(tok, det);
+    prev = tok;
   }
-  const pkg = launchedPackages(s)[0];
-  const { base } = effectiveCommand(s);
-  if (pkg) return `${base} ${pkg.spec}`;
-  return [s.command, ...s.args].filter(Boolean).join(' ').slice(0, 80);
+  let out = parts.join('').replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/g, '$1••••••••@');
+  for (const { re } of SECRET_PATTERNS) out = out.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`), (m) => (m.includes('••••') ? m : mask(m)));
+  return out.replace(/([?&](?:[\w-]*(?:key|token|secret|auth|password|sig|access)[\w-]*)=)([^&\s"']+)/gi, (_, k, v) => `${k}${mask(v)}`);
 }
+
+// What a server runs, for the Servers table. Masked before it is shortened,
+// so a cut cannot leave part of a secret behind.
+function launcher(s) {
+  let text;
+  if (s.url) {
+    try { const u = new URL(s.url); text = `${u.protocol.replace(':', '')}://${u.host}${u.pathname === '/' ? '' : u.pathname}`; } catch { text = s.url; }
+  } else {
+    const pkg = launchedPackages(s)[0];
+    const { base } = effectiveCommand(s);
+    text = pkg ? `${base} ${pkg.spec}` : [s.command, ...s.args].filter(Boolean).join(' ');
+  }
+  const chars = [...maskCommand(text)];
+  return chars.length > 80 ? `${chars.slice(0, 79).join('')}…` : chars.join('');
+}
+
+// Findings are filtered by server, or by file for findings that belong to a
+// file and not to one server (for example settings that apply to every server).
+const baseName = (p) => String(displayPath(p) || '').split(/[\\/]/).pop();
+const filterKey = (f) => (f.server ? `server:${f.server}` : `file:${displayPath(f.file) || ''}`);
+const filterLabel = (f) => f.server || baseName(f.file) || 'unknown';
 
 // A 0-100 ruler with the grade bands marked and the score pointed out.
 function scale(value, grade) {
@@ -71,6 +108,10 @@ function scale(value, grade) {
 
 export function renderHtml(result) {
   const { score, findings, configs, servers, toolsScanned, generatedAt, version, live } = result;
+  // Config files that could not be read or parsed; the CLI lists them in result.errors.
+  const errors = result.errors ?? configs.filter((c) => c.error).map((c) => ({ path: c.source.path, error: c.error }));
+  const incomplete = errors.length > 0;
+  const incompleteText = `The scan is incomplete: ${plural(errors.length, 'config file')} could not be read or parsed, so this score covers only the files that were read.`;
   const allServers = configs.flatMap((c) => c.servers);
   const clients = [...new Set(configs.map((c) => c.source.client))];
   const impact = impactByRule(findings);
@@ -80,17 +121,18 @@ export function renderHtml(result) {
   // ---- summary sentence ----
   const countWords = SEVERITIES.filter((s) => score.counts[s]).map((s) => `${score.counts[s]} ${s}`);
   const listText = countWords.length > 1 ? `${countWords.slice(0, -1).join(', ')} and ${countWords.at(-1)}` : countWords[0];
+  const verdict = incomplete ? incompleteText : VERDICT[score.grade];
   const summary = findings.length
-    ? `${cap(words(findings.length))} finding${findings.length === 1 ? '' : 's'}: ${listText}. ${VERDICT[score.grade]}`
-    : `No findings. ${VERDICT[score.grade]}`;
+    ? `${cap(words(findings.length))} finding${findings.length === 1 ? '' : 's'}: ${listText}. ${verdict}`
+    : `No findings. ${verdict}`;
 
   // ---- what to fix first: one row per rule ----
   const byRule = new Map();
   for (const f of findings) {
-    if (!byRule.has(f.id)) byRule.set(f.id, { id: f.id, sev: f.severity, targets: new Set(), n: 0 });
+    if (!byRule.has(f.id)) byRule.set(f.id, { id: f.id, sev: f.severity, targets: new Map(), n: 0 });
     const r = byRule.get(f.id);
     r.n++;
-    r.targets.add(f.server || displayPath(f.file).split(/[\\/]/).pop());
+    r.targets.set(filterKey(f), f);
     if (SEVERITIES.indexOf(f.severity) < SEVERITIES.indexOf(r.sev)) r.sev = f.severity;
   }
   const rules = [...byRule.values()].sort((a, b) => SEVERITIES.indexOf(a.sev) - SEVERITIES.indexOf(b.sev) || impact[b.id] - impact[a.id]);
@@ -98,7 +140,7 @@ export function renderHtml(result) {
         <tr>
           <td class="n">${i + 1}</td>
           <td><strong>${esc(RULES[r.id].title)}</strong><br><span class="fixtext">${esc(RULES[r.id].fix)}</span></td>
-          <td>${[...r.targets].map((t) => `<button type="button" class="link" data-server="${esc(t)}">${esc(t)}</button>`).join(', ')}</td>
+          <td>${[...r.targets].map(([key, f]) => `<button type="button" class="link" data-key="${esc(key)}" data-label="${esc(f.server ? `server ${f.server}` : `file ${displayPath(f.file) || ''}`)}"${f.server ? '' : ` title="${esc(displayPath(f.file))}"`}>${esc(filterLabel(f))}</button>`).join(', ')}</td>
           <td><span class="sev s-${r.sev}">${cap(r.sev)}</span></td>
           <td class="num">${impact[r.id] > 0 ? `+${impact[r.id]}` : '0'}</td>
         </tr>`).join('');
@@ -110,7 +152,7 @@ export function renderHtml(result) {
       .map((sev) => `<span class="s-${sev}">${fs.filter((f) => f.severity === sev).length} ${sev}</span>`).join(', ');
     return `
         <tr>
-          <td>${fs.length ? `<button type="button" class="link strong" data-server="${esc(s.name)}">${esc(s.name)}</button>` : `<strong>${esc(s.name)}</strong>`}</td>
+          <td>${fs.length ? `<button type="button" class="link strong" data-key="${esc(`server:${s.name}`)}" data-label="${esc(`server ${s.name}`)}">${esc(s.name)}</button>` : `<strong>${esc(s.name)}</strong>`}</td>
           <td>${esc(s.client)}${s.scope === 'project' ? ' (project)' : ''}${s.disabled ? ', disabled' : ''}</td>
           <td><code>${esc(launcher(s))}</code></td>
           <td>${counts || '<span class="muted">None</span>'}</td>
@@ -125,7 +167,7 @@ export function renderHtml(result) {
     if (snip) {
       excerpt = `<pre class="excerpt" aria-label="Excerpt from ${esc(displayPath(f.file))}">${snip.map((l) => `<span class="${l.hit ? 'ln hit' : 'ln'}"><span class="no">${l.n}</span>${esc(l.text) || ' '}</span>`).join('')}</pre>`;
     } else if (f.evidence) {
-      excerpt = `<p class="label">${isTool ? `Description of tool <code>${esc(f.jsonPath.slice(6))}</code>, as the model sees it` : 'Evidence'}</p><pre class="excerpt wrap">${f.id === 'MCS016' ? markPoison(f.evidence) : esc(f.evidence)}</pre>`;
+      excerpt = `<p class="label">${isTool ? `Description of tool <code>${esc(f.jsonPath.slice(6))}</code>, as the model sees it` : 'Evidence'}</p><pre class="excerpt wrap">${f.id === 'MCS016' ? markPoison(f.evidence) : esc(maskCommand(f.evidence))}</pre>`;
     }
     const where = [
       f.server ? ['Server', `${esc(f.server)}${f.client ? ` in ${esc(f.client)}` : ''}`] : f.client ? ['Client', esc(f.client)] : null,
@@ -134,7 +176,7 @@ export function renderHtml(result) {
     ].filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
     const search = [f.id, f.title, f.server, f.client, f.message, displayPath(f.file)].join(' ').toLowerCase();
     return `
-      <article class="finding" id="f${i + 1}" data-sev="${f.severity}" data-server="${esc(f.server || '')}" data-search="${esc(search)}">
+      <article class="finding" id="f${i + 1}" data-sev="${f.severity}" data-key="${esc(filterKey(f))}" data-search="${esc(search)}">
         <p class="kicker"><span class="sev s-${f.severity}">${cap(f.severity)}</span> <span class="rid">${esc(f.id)}</span></p>
         <h3>${esc(f.title)}</h3>
         <p class="msg">${esc(f.message)}</p>
@@ -253,6 +295,7 @@ a{color:var(--link)}
 .excerpt.wrap{white-space:pre-wrap;word-break:break-word;padding:.6rem .9rem}
 mark{background:var(--hl);color:var(--hl-ink);padding:0 1px}
 .none{padding:1rem 0;color:var(--muted)}
+.warn{color:var(--medium);border-left:3px solid var(--medium);padding-left:.8rem}
 
 ul.scope{padding-left:1.2rem}ul.scope li{margin:.3rem 0}
 footer{margin-top:3.5rem;padding-top:.8rem;border-top:1px solid var(--rule);font-size:.88rem;color:var(--muted)}
@@ -283,9 +326,11 @@ footer{margin-top:3.5rem;padding-top:.8rem;border-top:1px solid var(--rule);font
 
   <h1>Score ${score.value} of 100, grade ${score.grade}</h1>
   <p class="lead">${esc(summary)}</p>
+  ${incomplete ? `<p class="warn"><strong>Incomplete scan.</strong> ${plural(errors.length, 'config file')} could not be read or parsed. A file that could not be read may hold problems this report does not show.</p>` : ''}
   ${scale(score.value, score.grade)}
   <dl class="facts">
-    <dt>Scanned</dt><dd>${plural(configs.length, 'config file')} containing ${plural(servers, 'MCP server')}</dd>
+    <dt>Scanned</dt><dd>${configs.length || !toolsScanned ? `${plural(configs.length, 'config file')} containing ${plural(servers, 'MCP server')}` : `No config files. ${plural(toolsScanned, 'tool description')} from a tools file.`}</dd>
+    ${incomplete ? `<dt>Incomplete</dt><dd class="s-medium">${esc(errors.map((e) => displayPath(e.path)).join(', '))}</dd>` : ''}
     <dt>Clients</dt><dd>${clients.length ? esc(clients.join(', ')) : 'None found'}</dd>
     <dt>Tool descriptions</dt><dd>${toolsScanned ? `${toolsScanned} inspected` : 'Not inspected (run with <code>--connect</code>)'}</dd>
   </dl>
@@ -311,7 +356,7 @@ footer{margin-top:3.5rem;padding-top:.8rem;border-top:1px solid var(--rule);font
     <span class="lab">Show</span>${filterLinks}
     <input id="q" type="search" placeholder="Search" aria-label="Search findings">
   </div>
-  <p class="status"><span id="count">${plural(findings.length, 'finding')}</span><span class="serverflt" id="sf"> for server <b id="sfn"></b>. <button type="button" class="link" id="sfx">Show all servers</button></span></p>
+  <p class="status"><span id="count">${plural(findings.length, 'finding')}</span><span class="serverflt" id="sf"> for <b id="sfn"></b>. <button type="button" class="link" id="sfx">Show all</button></span></p>
   ${findingBlocks}
   <p class="none" id="empty" hidden>No findings match.</p>` : '<p>No findings.</p>'}
 
@@ -328,21 +373,21 @@ footer{margin-top:3.5rem;padding-top:.8rem;border-top:1px solid var(--rule);font
 (function(){
   document.getElementById('print').addEventListener('click',function(){window.print();});
   var items=[].slice.call(document.querySelectorAll('.finding'));if(!items.length)return;
-  var sev='all',server='',q='';
+  var sev='all',key='',label='',q='';
   function apply(){
     var n=0;
-    items.forEach(function(r){var ok=(sev==='all'||r.dataset.sev===sev)&&(!server||r.dataset.server===server)&&(!q||r.dataset.search.indexOf(q)>=0);r.hidden=!ok;if(ok)n++;});
+    items.forEach(function(r){var ok=(sev==='all'||r.dataset.sev===sev)&&(!key||r.dataset.key===key)&&(!q||r.dataset.search.indexOf(q)>=0);r.hidden=!ok;if(ok)n++;});
     document.getElementById('count').textContent=n+(n===1?' finding':' findings');
     document.getElementById('empty').hidden=n>0;
-    document.getElementById('sf').classList.toggle('on',!!server);
-    document.getElementById('sfn').textContent=server;
+    document.getElementById('sf').classList.toggle('on',!!key);
+    document.getElementById('sfn').textContent=label;
   }
   document.querySelectorAll('.flt').forEach(function(b){b.addEventListener('click',function(){
     document.querySelectorAll('.flt').forEach(function(x){x.classList.remove('on');});b.classList.add('on');sev=b.dataset.filter;apply();});});
   document.getElementById('q').addEventListener('input',function(e){q=e.target.value.trim().toLowerCase();apply();});
-  document.querySelectorAll('button[data-server]').forEach(function(el){el.addEventListener('click',function(){
-    server=el.dataset.server;apply();document.getElementById('findings').scrollIntoView({behavior:'smooth'});});});
-  document.getElementById('sfx').addEventListener('click',function(){server='';apply();});
+  document.querySelectorAll('button[data-key]').forEach(function(el){el.addEventListener('click',function(){
+    key=el.dataset.key;label=el.dataset.label;apply();document.getElementById('findings').scrollIntoView({behavior:'smooth'});});});
+  document.getElementById('sfx').addEventListener('click',function(){key='';label='';apply();});
   window.addEventListener('beforeprint',function(){items.forEach(function(r){r.hidden=false;});});
   window.addEventListener('afterprint',apply);
 })();
