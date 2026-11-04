@@ -11,13 +11,29 @@ const DEV_DB_PASSWORDS = new Set([
   'redis', 'redispw', 'mongo', 'mongodb', 'guest', 'clickhouse',
 ]);
 
+// The host of one entry of a host list: "localhost:5432" -> "localhost", "[::1]:5432" -> "[::1]".
+function hostPart(h) {
+  if (h.startsWith('[')) { const e = h.indexOf(']'); return e < 0 ? h : h.slice(0, e + 1); }
+  const c = h.indexOf(':');
+  return c < 0 ? h : h.slice(0, c);
+}
+
 function isLocalDevDb(m) {
   // locate.js calls `valid` from String.replace, where the match has no index.
   if (typeof m.index !== 'number' || typeof m.input !== 'string') return false;
   if (!DEV_DB_PASSWORDS.has(m[1].toLowerCase())) return false;
-  const rest = m.input.slice(m.index + m[0].length, m.index + m[0].length + 256);
-  const host = rest.startsWith('[') ? rest.slice(0, rest.indexOf(']') + 1) : rest.split(/[:/?#,\s]/)[0];
-  return LOOPBACK.test(host);
+  // The rest of the URL (bounded, so many matches in one text stay linear).
+  const after = m.input.slice(m.index + m[0].length, m.index + m[0].length + 1024);
+  const end = after.search(/[\s"'<>`]/);
+  const rest = end < 0 ? after : after.slice(0, end);
+  // Every host of a multi-host URL (replica sets, libpq host lists) must be loopback.
+  const stop = rest.search(/[/?#]/);
+  const hosts = (stop < 0 ? rest : rest.slice(0, stop)).split(',');
+  if (!hosts.every((h) => LOOPBACK.test(hostPart(h)))) return false;
+  // libpq's host= and hostaddr= parameters override the host in the URL.
+  const q = rest.indexOf('?');
+  if (q >= 0 && /(?:^|&)(?:host|hostaddr)=/i.test(rest.slice(q + 1))) return false;
+  return true;
 }
 
 // `group` names the capture group that holds the secret itself (default: the
@@ -83,10 +99,35 @@ const CAMEL = /^[A-Z]?[a-z]+(?:[A-Z][a-z]+)*\d{0,2}$/;
 // camelCase word allows digits only at its end, needs a vowel in every part and
 // parts of three letters or more on average ("yzuEpihKowqaCxgb" is not one).
 function wordyToken(t) {
-  if (/^[a-z]+\d{0,2}$/.test(t) || /^[A-Z]{1,6}\d{0,2}$/.test(t) || /^\d{1,4}$/.test(t)) return true;
+  // An all-caps word is an acronym (GCP, SA, AWS): short. Longer groups of
+  // capitals are what license-style keys are made of (GBRLE-NROXA-FNUYV).
+  if (/^[a-z]+\d{0,2}$/.test(t) || /^[A-Z]{1,4}\d{0,2}$/.test(t) || /^\d{1,4}$/.test(t)) return true;
   if (!CAMEL.test(t)) return false;
   const parts = t.replace(/\d+$/, '').split(/(?=[A-Z])/);
   return parts.every((p) => /[aeiouy]/i.test(p)) && parts.length * 3 <= t.length;
+}
+
+// Words that environment variable names are made of. A name has at least one
+// of them, so groups of random capitals (UPKJSE_QHUSAS) do not count as one.
+const ENV_WORDS = new Set([
+  'api', 'key', 'keys', 'token', 'tokens', 'secret', 'secrets', 'password', 'passwd', 'pass', 'pwd', 'access', 'auth',
+  'pat', 'personal', 'private', 'client', 'id', 'url', 'uri', 'host', 'user', 'username', 'name', 'env', 'var', 'path',
+  'service', 'account', 'bearer', 'credential', 'credentials', 'app', 'bot', 'oauth', 'session', 'signing', 'webhook',
+  'master', 'admin', 'db', 'database', 'github', 'gitlab', 'openai', 'anthropic', 'aws', 'azure', 'google', 'gcp',
+  'slack', 'stripe', 'notion', 'linear', 'jira', 'npm', 'hf', 'mcp', 'prod', 'dev', 'test', 'local', 'config',
+  'settings', 'module', 'default', 'file', 'value', 'data', 'home', 'root', 'region', 'project', 'org', 'team',
+  'workspace', 'endpoint', 'server', 'ref', 'from',
+]);
+
+/**
+ * An environment variable name such as GITHUB_PERSONAL_ACCESS_TOKEN: words of
+ * capitals (each with at most a two-digit suffix) joined by underscores, one
+ * of them a word that such names use.
+ */
+export function looksLikeEnvName(v) {
+  if (!/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v)) return false;
+  const parts = v.split('_');
+  return parts.every((p) => /^[A-Z]+\d{0,2}$/.test(p)) && parts.some((p) => ENV_WORDS.has(p.toLowerCase()));
 }
 
 // Values that are clearly not credentials, whatever their key is called.
@@ -99,13 +140,18 @@ export function looksLikeSetting(v, key) {
   // References to a secret held elsewhere: AWS ARNs, GCP Secret Manager names,
   // Azure Key Vault references. They name the secret; they are not the secret.
   if (/^arn:aws[\w-]*:/i.test(v) || /^projects\/[^/]+\/secrets\//.test(v) || /^@Microsoft\.KeyVault\(/i.test(v)) return true;
-  // An environment variable name (--token-env-var GITHUB_PERSONAL_ACCESS_TOKEN).
-  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v)) return true;
-  // Host name, in any case (Login.MicrosoftOnline.com), with a real-looking TLD.
-  const host = v.match(/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.([A-Za-z]{2,24})(?::\d{1,5})?(?:\/[^\s]*)?$/);
-  if (host && (host[1].length === 2 || TLDS.has(host[1].toLowerCase()))) return true;
   // A passphrase looks like the rules below, so keep them away from password keys.
   if (passKey) return false;
+  // An environment variable name (API_KEY=OPENAI_API_KEY).
+  if (looksLikeEnvName(v)) return true;
+  // Host name: in lower case with a known or two-letter TLD (api.acme.io,
+  // login.acme.de), or in any case with a known TLD (Login.MicrosoftOnline.com).
+  const host = v.match(/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.([A-Za-z]{2,24})(?::\d{1,5})?(?:\/[^\s]*)?$/);
+  if (host) {
+    const tld = host[1];
+    const lower = !/[A-Z]/.test(v.split('/')[0]);
+    if (TLDS.has(tld.toLowerCase()) || (lower && tld.length === 2)) return true;
+  }
   // Relative paths: Windows style (keys\id_ed25519) or under a usual folder name.
   if (/^[\w .-]+(?:\\[\w .-]+)+\\?$/.test(v)) return true;
   if (/^(?:secrets?|keys?|credentials?|creds|certs?|config|conf|\.?ssh|private|home|users?|etc|var|opt|data|tmp)[\\/]/i.test(v)) return true;
@@ -114,7 +160,8 @@ export function looksLikeSetting(v, key) {
   // "EnvironmentCredential", "prod/mcp/database-credentials".
   if (/^[A-Za-z0-9._:,/\\-]+$/.test(v)) {
     const tokens = v.split(/[._:,/\\-]+/).filter(Boolean);
-    if (tokens.every(wordyToken) && (tokens.length >= 2 || /[a-z][A-Z]/.test(v))) return true;
+    // At least one word in lower or mixed case: all-caps groups are a key shape.
+    if (tokens.every(wordyToken) && (tokens.length >= 2 || /[a-z][A-Z]/.test(v)) && tokens.some((t) => /[a-z]/.test(t))) return true;
   }
   return false;
 }
@@ -281,11 +328,18 @@ export function findSecrets(value, keyName = '') {
   if (placeholderText(s) && (!s.trim() || !/\s/.test(s.trim()))) return [];
   const out = [];
   for (const p of SECRET_PATTERNS) {
+    if (p.name === 'Private key') {
+      // A private key is the whole value, not just its header line: one
+      // finding, judged once (judging the whole value per header line would
+      // be quadratic on a value made of repeated headers).
+      const m = s.match(p.re);
+      if (m && !placeholderText(s)) out.push({ type: p.name, confidence: 'high', match: m[0], secret: s });
+      continue;
+    }
     for (const m of s.matchAll(globalRe(p.re))) {
       if (p.valid && !p.valid(m)) continue;
-      // A private key is the whole value, not just its header line.
-      const secret = p.name === 'Private key' ? s : m[p.group || 0];
-      if (placeholderText(p.name === 'Private key' ? s : m[0])) continue;
+      const secret = m[p.group || 0];
+      if (placeholderText(m[0])) continue;
       out.push({ type: p.name, confidence: 'high', match: m[0], secret });
     }
   }
@@ -299,11 +353,47 @@ export function findSecrets(value, keyName = '') {
   if (!keyLooksSecret(keyName)) return out;
   const candidates = refs ? refs.defaults : [s];
   for (const c of candidates) {
-    if (c.length >= 12 && !/\s/.test(c) && !placeholderText(c) && !looksLikeSetting(c, keyName) && entropy(c) >= 3.2) {
+    if (c.length >= 12 && !/\s/.test(c) && entropy(c) >= 3.2 && !placeholderText(c) && !looksLikeSetting(c, keyName)) {
       out.push({ type: `Credential in ${keyName}`, confidence: 'medium', match: c, secret: c });
     }
   }
   return out;
+}
+
+// ---- Arguments ----
+// How MCS001 reads one command line argument. This is the only parser for it:
+// detection (checks.js) and masking (mask.js) both use it, so whatever is
+// reported is also hidden.
+const ARG_EQ = /^--?([\w-]+)=(.+)$/; // --api-key=value
+const ARG_FLAG = /^--?[\w-]+$/; // --token (its value is the next argument)
+const ARG_HEADER = /^([A-Za-z][\w-]*)\s*:\s*(\S.*)$/; // "X-Api-Key: value", "X-Api-Key : value"
+const ARG_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * The values MCS001 judges in one argument, each with the key it is judged
+ * under and its offset in the argument: first the argument itself (or the part
+ * after "--key="), then, when that is a "Name: value" header, the header value.
+ * @param {string} arg
+ * @param {string} [prev] the argument before it
+ * @returns {{key: string, value: string, offset: number}[]}
+ */
+export function argValues(arg, prev = '') {
+  const a = String(arg ?? '');
+  const eq = ARG_EQ.exec(a);
+  const prevFlag = prev && ARG_FLAG.test(prev) ? prev.replace(/^-+/, '') : '';
+  const main = eq ? { key: eq[1], value: eq[2], offset: a.length - eq[2].length } : { key: prevFlag, value: a, offset: 0 };
+  const out = [main];
+  if (!ARG_URL.test(main.value)) {
+    const h = ARG_HEADER.exec(main.value);
+    if (h) out.push({ key: h[1], value: h[2].trim(), offset: main.offset + main.value.length - h[2].length });
+  }
+  return out;
+}
+
+/** The first credential MCS001 reports in one argument, or null. */
+export function detectInArg(arg, prev = '') {
+  const [main, header] = argValues(arg, prev);
+  return detectSecret(main.value, main.key) || (header ? detectSecret(header.value, header.key) : null);
 }
 
 /**

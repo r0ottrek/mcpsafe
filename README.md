@@ -103,7 +103,7 @@ Where a rule gives a range, the severity depends on the finding, so check the co
 | MCS017 | low to high | Tool shadowing. Low for the same tool name on two servers, medium for a mention of another server's tool (or a shared name where one tool also looks suspicious), high when a tool gives instructions about another server's tool |
 | MCS018 | medium | Packages installed from a git branch or URL instead of a pinned release |
 
-MCS001 does not report values that only point at a secret (`${VAR}` references, environment variable names, file paths, AWS ARNs and other secret manager names), template placeholders copied from a README (`xoxb-your-bot-token`, `{{GITHUB_TOKEN}}`), or a database URL on localhost with a well-known default password such as `postgres:postgres@127.0.0.1`.
+MCS001 does not report values that only point at a secret (`${VAR}` references, environment variable names, file paths, AWS ARNs and other secret manager names), template placeholders copied from a README (`xoxb-your-bot-token`, `{{GITHUB_TOKEN}}`), or a database URL on localhost with a well-known default password such as `postgres:postgres@127.0.0.1`. That last exception applies only when every host in the URL is local, so a replica set or a `host=` parameter that reaches another machine is still reported.
 
 The reasoning and the fix for each rule are in [src/rules.js](src/rules.js). `mcpsafe --rules` lists them.
 

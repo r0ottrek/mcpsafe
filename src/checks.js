@@ -2,7 +2,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { RULES, SEVERITIES } from './rules.js';
-import { detectSecret, isPlaceholder, mask } from './secrets.js';
+import { detectInArg, detectSecret, isPlaceholder, mask } from './secrets.js';
 import { isCredentialParam, maskArgv, maskString } from './mask.js';
 import { effectiveCommand, launchedPackages, parseDockerRun, argsAfterPackage, splitCommandLine } from './packages.js';
 
@@ -283,14 +283,7 @@ function serverScripts(s) {
 function secretsInArgs(list) {
   const hits = [];
   list.forEach((a, i) => {
-    const eq = a.match(/^--?([\w-]+)=(.+)$/);
-    const prevFlag = i > 0 && /^--?[\w-]+$/.test(list[i - 1]) ? list[i - 1].replace(/^-+/, '') : '';
-    const [key, value] = eq ? [eq[1], eq[2]] : [prevFlag, a];
-    let det = detectSecret(value, key);
-    if (!det && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
-      const header = value.match(/^([A-Za-z][\w-]*)\s*:\s*(\S.*)$/);
-      if (header) det = detectSecret(header[2].trim(), header[1]);
-    }
+    const det = detectInArg(a, i > 0 ? list[i - 1] : '');
     if (det) hits.push([i, det]);
   });
   return hits;

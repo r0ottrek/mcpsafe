@@ -15,11 +15,22 @@ export function baseCommand(cmd) {
 // words, and single and double quotes group them. Outside quotes a backslash
 // only escapes whitespace or a quote, so Windows paths keep their backslashes.
 export function splitCommandLine(line) {
+  return splitCommandLineSpans(line).map((w) => w.text);
+}
+
+/**
+ * splitCommandLine() with the place of each word in the line: `start` and
+ * `end` cover the word as written, quotes and backslashes included.
+ * @returns {{text: string, start: number, end: number}[]}
+ */
+export function splitCommandLineSpans(line) {
   const out = [];
   const str = String(line ?? '');
   let cur = '';
   let word = false;
+  let start = 0;
   let quote = null;
+  const begin = (i) => { if (!word) { word = true; start = i; } };
   for (let i = 0; i < str.length; i++) {
     const c = str[i];
     if (quote === "'") { if (c === "'") quote = null; else cur += c; continue; }
@@ -29,13 +40,13 @@ export function splitCommandLine(line) {
       else cur += c;
       continue;
     }
-    if (c === "'" || c === '"') { quote = c; word = true; continue; }
-    if (c === '\\' && /[\s"']/.test(str[i + 1] || '')) { cur += str[++i]; word = true; continue; }
-    if (/\s/.test(c)) { if (word) out.push(cur); cur = ''; word = false; continue; }
+    if (c === "'" || c === '"') { begin(i); quote = c; continue; }
+    if (c === '\\' && /[\s"']/.test(str[i + 1] || '')) { begin(i); cur += str[++i]; continue; }
+    if (/\s/.test(c)) { if (word) out.push({ text: cur, start, end: i }); cur = ''; word = false; continue; }
+    begin(i);
     cur += c;
-    word = true;
   }
-  if (word) out.push(cur);
+  if (word) out.push({ text: cur, start, end: str.length });
   return out;
 }
 

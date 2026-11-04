@@ -3,7 +3,9 @@
 // error messages of --connect.
 //
 // A value is hidden when the MCS001 detection (findSecrets) reports it, given
-// the key, --flag or header name it belongs to, and also when it has one of a
+// the key, --flag or header name it belongs to (arguments and command lines
+// are read with argValues() and splitCommandLine(), the same parsers MCS001
+// uses, so whatever it reports is hidden), and also when it has one of a
 // few structural forms: a password in a URL, a credential query parameter, a
 // Bearer or Basic value, or a value whose key names a credential. Masking is
 // told about secrets found elsewhere in the same config (`known`), so a
@@ -12,7 +14,8 @@
 // Every scan here is linear in the length of the text: the regular
 // expressions are anchored or bounded, and known secrets are looked up by a
 // fixed-length prefix rather than tried one by one.
-import { findSecrets, isPlaceholder, keyLooksSecret, looksLikeSetting, mask, SECRET_PATTERNS } from './secrets.js';
+import { argValues, findSecrets, isPlaceholder, keyLooksSecret, looksLikeEnvName, looksLikeSetting, mask, SECRET_PATTERNS } from './secrets.js';
+import { splitCommandLineSpans } from './packages.js';
 
 export const BULLETS = '••••••••';
 
@@ -31,23 +34,36 @@ const PATTERNS = SECRET_PATTERNS.map((p) => ({
   re: new RegExp(p.re.source, `${p.re.flags.replace(/[gd]/g, '')}gd`),
 }));
 
-const FLAG = /^--?([A-Za-z][\w.-]*)$/; // --token, -k
-const HEADER_NAME = /(?:^|[=:])([A-Za-z][\w-]{0,63}):$/; // "x-api-key:" or "--header=x-api-key:"
+// These add to what argValues() (the MCS001 parser) finds; they never take
+// away from it. Keys may start with any word character and have any length.
+const FLAG = /^--?([\w.-]+)$/; // --token, -k, --2fa-secret
+const HEADER_NAME = /(?:^|[=:])([A-Za-z][\w-]*):$/; // "x-api-key:" or "--header=x-api-key:"
+const HEADER_WORD = /^[A-Za-z][\w-]*$/; // "x-api-key" in "x-api-key : value"
 const AUTH = /(?:^|[=:])(Bearer|Basic|Token)$/i; // "Bearer", "Authorization:Bearer"
-const KV = /^-{0,2}([A-Za-z_][\w.-]{0,63})([=:])/; // --api-key=v, API_KEY=v, X-Api-Key:v
+const KV = /^-{0,2}([\w.-]+)([=:])/; // --api-key=v, API_KEY=v, X-Api-Key:v
 const AUTH_VALUE = /^[A-Za-z0-9._~+/=-]{16,}$/;
-const ENV_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/; // GITHUB_PERSONAL_ACCESS_TOKEN names a variable
 const LEAD = new Set(['"', "'", '`', '(', '[', '{', '<']);
 const TRAIL = new Set(['"', "'", '`', ')', ']', '}', '>', ',', ';', '.']);
 const OPENER = { ')': '(', ']': '[', '}': '{', '>': '<' };
 const QUERY = /[?&]([\w.-]{1,64})=([^&#\s"'<>\\]*)/g;
 const WORD = /\S+/g;
 
+// findSecrets() results for the secretRanges() call that is running, so a
+// value judged by more than one rule (or repeated in the text) is judged once.
+let cache = null;
+function detect(v, key) {
+  if (!cache) return findSecrets(v, key);
+  const id = `${key}\0${v}`;
+  let r = cache.get(id);
+  if (!r) { r = findSecrets(v, key); cache.set(id, r); }
+  return r;
+}
+
 // A value that a credential-named key holds and that is worth hiding even
 // when it is not random enough for MCS001 (a short or simple password).
 function plausible(v, key) {
   return v.length >= 6 && !/\s/.test(v) && !v.startsWith('-') && !v.includes('••••') && !/^(Bearer|Basic|Token)$/i.test(v)
-    && !ENV_NAME.test(v) && !isPlaceholder(v) && !looksLikeSetting(v, key);
+    && !looksLikeEnvName(v) && !isPlaceholder(v) && !looksLikeSetting(v, key);
 }
 
 // Every occurrence of `secret` within s[a, b).
@@ -68,7 +84,7 @@ function judge(s, a, b, key, ranges) {
   // finding is possible in fewer than 12 characters.
   const found = new Set();
   if (v.length >= 12) {
-    for (const d of findSecrets(v, key)) if (d.confidence !== 'high' || d.type === 'Authorization header credential') found.add(d.secret);
+    for (const d of detect(v, key)) if (d.confidence !== 'high' || d.type === 'Authorization header credential') found.add(d.secret);
   }
   if (found.size > 4) knownRanges(s, secretIndex(found, 1), ranges, a, b);
   else for (const x of found) occurrences(s, a, b, x, ranges);
@@ -78,7 +94,7 @@ function judge(s, a, b, key, ranges) {
 // --api-key=v, API_KEY="v", X-Api-Key:v, and one level of nesting such as
 // --header=X-Api-Key:v.
 function judgeKV(s, a, b, ranges, depth = 0) {
-  const m = KV.exec(s.slice(a, Math.min(b, a + 70)));
+  const m = KV.exec(s.slice(a, b));
   if (!m) return;
   let va = a + m[0].length;
   let vb = b;
@@ -91,13 +107,15 @@ function judgeKV(s, a, b, ranges, depth = 0) {
 
 // What the word before a value says about it: a --flag or header name gives
 // its key, Bearer/Basic/Token says it is an Authorization value.
-function contextOf(word) {
+function contextOf(word, before = '') {
   if (!word) return null;
-  const tail = (word.length > 128 ? word.slice(-128) : word).replace(/["']/g, '');
+  const w = word.replace(/["']/g, '');
   let m;
-  if (word.length <= 128 && (m = FLAG.exec(tail))) return { key: m[1] };
-  if ((m = AUTH.exec(tail))) return { auth: m[1].toLowerCase() };
-  if ((m = HEADER_NAME.exec(tail))) return { key: m[1] };
+  if ((m = FLAG.exec(w))) return { key: m[1] };
+  if ((m = AUTH.exec(w))) return { auth: m[1].toLowerCase() };
+  if ((m = HEADER_NAME.exec(w))) return { key: m[1] };
+  // "X-Api-Key : value": a colon on its own after a header name.
+  if (w === ':' && (m = HEADER_WORD.exec(before.replace(/["']/g, '')))) return { key: m[0] };
   return null;
 }
 
@@ -110,6 +128,7 @@ function lastWord(s) {
 // Words separated by white space, with quotes and brackets around them
 // removed, each judged with the context of the word before it.
 function words(s, ctx, ranges) {
+  let before = '';
   for (const m of s.matchAll(WORD)) {
     let a = m.index;
     let b = a + m[0].length;
@@ -122,11 +141,52 @@ function words(s, ctx, ranges) {
       if (ctx.key) judge(s, a, b, ctx.key, ranges);
       else if (ctx.auth) {
         const v = s.slice(a, b);
-        if ((ctx.auth !== 'token' && AUTH_VALUE.test(v) && !isPlaceholder(v)) || (v.length >= 12 && findSecrets(v, 'bearer').length)) ranges.push([a, b, false]);
+        if ((ctx.auth !== 'token' && AUTH_VALUE.test(v) && !isPlaceholder(v)) || (v.length >= 12 && detect(v, 'bearer').length)) ranges.push([a, b, false]);
       }
     }
     if (a < b) judgeKV(s, a, b, ranges);
-    ctx = contextOf(s.slice(a, b) || m[0]);
+    const text = s.slice(a, b) || m[0];
+    ctx = contextOf(text, before);
+    before = text;
+  }
+}
+
+// s[a, b) is a value, or holds it written with quotes or escapes: hide every
+// place where one of `secrets` is in it, or all of it when none is there as
+// written (a value with ${...} references or shell quoting). Many secrets
+// are looked up by prefix, so this stays linear.
+function hideIn(s, a, b, secrets, ranges) {
+  const n = ranges.length;
+  if (secrets.size > 4) knownRanges(s, secretIndex(secrets, 1), ranges, a, b);
+  else for (const x of secrets) occurrences(s, a, b, x, ranges);
+  if (ranges.length === n) ranges.push([a, b, false]);
+}
+
+// What MCS001 reports in one argument, read with argValues(), the parser that
+// detection uses. `arg` is all of s when `span` is not given; otherwise it is
+// the unquoted text of the word s[span.start, span.end). No finding is
+// possible in fewer than 12 characters.
+function argRanges(s, arg, prev, ranges, span) {
+  if (arg.length < 12) return;
+  for (const { key, value, offset } of argValues(arg, prev)) {
+    if (value.length < 12) continue;
+    const dets = detect(value, key);
+    if (!dets.length) continue;
+    const found = new Set(dets.map((d) => d.secret).filter(Boolean));
+    if (span) hideIn(s, span.start, span.end, found, ranges);
+    else hideIn(s, offset, offset + value.length, found, ranges);
+  }
+}
+
+// The text as one argument (with `prev` before it) and, when it has white
+// space, as a command line split the way MCS001 splits a `command` string.
+function args(s, prev, ranges) {
+  argRanges(s, s, prev, ranges, null);
+  if (!/\s/.test(s)) return;
+  let last = '';
+  for (const w of splitCommandLineSpans(s)) {
+    argRanges(s, w.text, last, ranges, w);
+    last = w.text;
   }
 }
 
@@ -149,7 +209,7 @@ function userinfo(s, ranges) {
     if (colon >= 0) {
       const pw = info.slice(colon + 1);
       if (pw && !isPlaceholder(pw) && !pw.includes('••••')) ranges.push([i + 3 + colon + 1, at, true]);
-    } else if (!isPlaceholder(info) && !info.includes('••••') && (info.length >= 20 || findSecrets(info, 'token').length)) {
+    } else if (!isPlaceholder(info) && !info.includes('••••') && (info.length >= 20 || detect(info, 'token').length)) {
       ranges.push([i + 3, at, false]);
     }
   }
@@ -228,14 +288,21 @@ export function knownRanges(s, idx, ranges, from = 0, to = s.length) {
 export function secretRanges(s, { key = '', prev = '', known = null } = {}) {
   const ranges = [];
   if (!s) return ranges;
-  const ctx = prev ? contextOf(lastWord(prev)) : null;
-  const k = key || ctx?.key || '';
-  if (k) judge(s, 0, s.length, k, ranges);
-  patterns(s, ranges);
-  userinfo(s, ranges);
-  query(s, ranges);
-  words(s, ctx, ranges);
-  if (known) knownRanges(s, known, ranges);
+  const outer = cache;
+  cache = outer || new Map();
+  try {
+    const ctx = prev ? contextOf(lastWord(prev)) : null;
+    const k = key || ctx?.key || '';
+    if (k) judge(s, 0, s.length, k, ranges);
+    args(s, prev, ranges);
+    patterns(s, ranges);
+    userinfo(s, ranges);
+    query(s, ranges);
+    words(s, ctx, ranges);
+    if (known) knownRanges(s, known, ranges);
+  } finally {
+    cache = outer;
+  }
   return ranges;
 }
 

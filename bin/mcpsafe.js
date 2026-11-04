@@ -161,7 +161,7 @@ function main() {
   }
   const minScore = parseMinScore(v['min-score']);
   if (minScore.error) {
-    console.error(`mcpsafe: ${minScore.error}`);
+    console.error(`mcpsafe: ${safe(minScore.error)}`);
     return Promise.resolve(2);
   }
   const gated = !!v['fail-on'] || minScore.value !== undefined;
