@@ -10,8 +10,8 @@ const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 
 const [ansiFile, outGif, command = 'npx mcpsafe'] = process.argv.slice(2);
-const ROWS = 40;
-const COLS = 100;
+const ROWS = 44;
+const COLS = 90;
 
 const COLORS = { 31: '#e0605a', 32: '#8fb35f', 33: '#d9a94a', 34: '#6b93d6', 35: '#b48ead', 36: '#6fb3b8', 90: '#8a8a8a', 97: '#ffffff', 30: '#111' };
 const BG = { 41: '#e03131', 42: '#2f9e44', 43: '#f59f00' };
@@ -65,7 +65,7 @@ while (i < html.length) {
   shown.push(...html.slice(i, i + CHUNK));
   i += CHUNK;
   // Pause on the score line so it can be read.
-  const pause = output.slice(i - CHUNK, i).some((l) => /Score/.test(l)) ? 1800 : 110;
+  const pause = output.slice(i - CHUNK, i).some((l) => /score/.test(l)) ? 1800 : 110;
   frames.push([screen(shown), pause]);
 }
 frames.push([screen([...shown, `${prompt}<span class="cur">█</span>`]), 4500]);
@@ -73,12 +73,21 @@ frames.push([screen([...shown, `${prompt}<span class="cur">█</span>`]), 4500])
 const page = (lines) => `<!doctype html><html><head><style>
 body{margin:0;background:transparent;font-family:'DejaVu Sans Mono',Menlo,monospace}
 .win{width:${COLS * 8.45 + 32}px;background:#141414;border-radius:4px;overflow:hidden;box-shadow:0 0 0 1px #2c2f36}
-.bar{height:32px;background:#1d2026;display:flex;align-items:center;gap:8px;padding:0 13px;position:relative;border-bottom:1px solid #262a31}
-.bar b{position:absolute;left:0;right:0;text-align:center;font:500 12.5px 'Inter',sans-serif;color:#8a929e;pointer-events:none}
-.bar i{width:12px;height:12px;border-radius:50%;display:block}
-.term{padding:12px 16px 14px;color:#d4d4d4;font-size:14px;line-height:17px;height:${ROWS * 17}px;white-space:pre;overflow:hidden}
+.term{padding:12px 16px 14px;color:#d4d4d4;font-size:14px;line-height:16px;height:${ROWS * 16}px;white-space:pre;overflow:hidden}
 .cur{color:#adb5bd}
 </style></head><body><div class="win"><div class="term">${lines.join('\n')}</div></div></body></html>`;
+
+// A .png output renders the whole session as one still image.
+if (outGif.endsWith('.png')) {
+  const all = [`${prompt}${esc(command)}`, ...html, `${prompt}<span class="cur">█</span>`];
+  const b = await chromium.launch();
+  const pg = await b.newPage({ viewport: { width: 1000, height: 800 }, deviceScaleFactor: 2 });
+  await pg.setContent(page(all).replace(`height:${ROWS * 16}px`, `height:${all.length * 16}px`));
+  await pg.locator('.win').screenshot({ path: outGif });
+  await b.close();
+  console.log(`wrote ${outGif}`);
+  process.exit(0);
+}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpsafe-gif-'));
 const browser = await chromium.launch();

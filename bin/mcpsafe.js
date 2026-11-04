@@ -35,7 +35,7 @@ Options
                         critical | high | medium | low
   --min-score <n>       Exit with code 1 if the score is below n
   --ignore <ids>        Comma-separated rule IDs to skip, e.g. MCS003,MCS004
-  -v, --verbose         Show masked evidence for each finding
+  -v, --verbose         Show each finding in its config file, with the fix
   --no-color            Disable colors (also honors NO_COLOR)
   --rules               List all rules
   --version             Print version
@@ -95,7 +95,7 @@ function main() {
   }).then((result) => {
     if (process.stderr.isTTY && v.connect && !v.json) process.stderr.write('\r\x1b[2K');
     if (v.json) process.stdout.write(`${JSON.stringify(toJson(result), null, 2)}\n`);
-    else process.stdout.write(`${renderTerminal(result, { color, verbose: v.verbose, width: Math.min(process.stdout.columns || 100, 120) })}\n`);
+    else process.stdout.write(`${renderTerminal(result, { color, verbose: v.verbose, width: Math.min(process.stdout.columns || Number(process.env.COLUMNS) || 100, 120) })}\n`);
 
     if (v.html) {
       let out = path.resolve(v.html);
