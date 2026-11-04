@@ -93,9 +93,10 @@ function guessClient(p) {
 
 /**
  * Resolve the list of config files to scan.
- * @param {{paths?: string[], home?: string|null, includeHome?: boolean}} opts
+ * @param {{paths?: string[], home?: string|null, includeHome?: boolean, depth?: number}} opts
+ * depth: how many folder levels below each path to search for project configs.
  */
-export function discover({ paths = [], home = os.homedir(), includeHome = true } = {}) {
+export function discover({ paths = [], home = os.homedir(), includeHome = true, depth = 6 } = {}) {
   const out = [];
   if (includeHome && home) {
     for (const c of userConfigCandidates(home)) if (exists(c.path)) out.push(c);
@@ -104,7 +105,7 @@ export function discover({ paths = [], home = os.homedir(), includeHome = true }
     const abs = path.resolve(p);
     let st;
     try { st = fs.statSync(abs); } catch { out.push({ client: 'MCP config', path: abs, scope: 'project', missing: true }); continue; }
-    if (st.isDirectory()) out.push(...findProjectConfigs(abs));
+    if (st.isDirectory()) out.push(...findProjectConfigs(abs, depth));
     else out.push({ client: guessClient(abs), path: abs, scope: 'project' });
   }
   // De-duplicate by resolved path.

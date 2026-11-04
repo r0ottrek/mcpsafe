@@ -29,6 +29,17 @@ test('discovers user configs from a fake home directory', () => {
   assert.ok(!r.stdout.includes(FAKE.github), 'secret must be masked in output');
 });
 
+test('without paths only the current folder is scanned, not subfolders', () => {
+  const home = tmpdir();
+  const cwd = tmpdir();
+  writeJson(path.join(cwd, '.mcp.json'), { mcpServers: { top: { command: 'node', args: ['a.js'] } } });
+  writeJson(path.join(cwd, 'sub/project/.mcp.json'), { mcpServers: { nested: { command: 'node', args: ['b.js'] } } });
+  const plain = JSON.parse(run(['--home', home, '--json'], { cwd }).stdout);
+  assert.deepEqual(plain.files.flatMap((f) => f.servers), ['top']);
+  const explicit = JSON.parse(run(['--no-home', cwd, '--json'], { cwd }).stdout);
+  assert.deepEqual(explicit.files.flatMap((f) => f.servers).sort(), ['nested', 'top']);
+});
+
 test('exit codes: --fail-on and --min-score', () => {
   const risky = path.join(root, 'examples/risky-setup');
   const safe = path.join(root, 'examples/safe-setup');

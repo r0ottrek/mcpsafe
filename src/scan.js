@@ -29,7 +29,7 @@ export function readToolsFile(file) {
  * @param {(msg: string) => void} [o.onProgress]
  */
 export async function scan(o = {}) {
-  const sources = discover({ paths: o.paths, home: o.home, includeHome: o.includeHome !== false });
+  const sources = discover({ paths: o.paths, home: o.home, includeHome: o.includeHome !== false, depth: o.depth });
   const configs = sources.map(loadConfig);
   let findings = runChecks(configs);
   const allServers = configs.flatMap((c) => c.servers);

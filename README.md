@@ -105,7 +105,7 @@ A server's tool descriptions are passed to the model verbatim, and you normally 
 | Cline, Roo Code | their MCP settings files under VS Code's `globalStorage`, and `.roo/mcp.json` |
 | Gemini CLI | `~/.gemini/settings.json`, `.gemini/settings.json` |
 
-With no arguments mcpsafe scans these files in your home directory and the current folder. Any other file or folder can be passed as an argument; folders are searched for the project files above. JSON with comments and trailing commas is accepted.
+With no arguments mcpsafe scans these files in your home directory and the project files in the current folder itself, without descending into subfolders. Any other file or folder can be passed as an argument; folders passed this way are searched recursively for the project files above. JSON with comments and trailing commas is accepted.
 
 ## Options
 

@@ -1,6 +1,6 @@
 {
   "name": "mcpsafe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "One-command security audit for MCP servers and AI agent configs (Claude, Cursor, VS Code, Windsurf, Gemini CLI). Finds hidden instructions, plaintext secrets, unpinned packages and over-privileged tools.",
   "type": "module",
   "bin": {

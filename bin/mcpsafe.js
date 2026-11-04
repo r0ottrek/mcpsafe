@@ -17,7 +17,8 @@ Usage
 
 With no paths, scans the MCP configs in your home directory (Claude Desktop,
 Claude Code, Cursor, VS Code, Windsurf, Cline, Roo Code, Gemini CLI) plus the
-current folder. Paths can be config files or project folders.
+project configs in the current folder (not its subfolders). Paths can be config
+files or folders; folders are searched recursively.
 
 Options
   --no-home             Skip user-level configs; only scan the given paths
@@ -81,6 +82,9 @@ function main() {
 
   return scan({
     paths,
+    // With no paths we only look at the current folder itself, not every
+    // project below it. Folders passed explicitly are searched recursively.
+    depth: positionals.length ? 6 : 0,
     home: v.home ? path.resolve(v.home) : undefined,
     includeHome,
     connect: v.connect,
