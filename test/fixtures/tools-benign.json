@@ -2527,5 +2527,190 @@
         "properties": {}
       }
     }
+  ],
+  "credential-use": [
+    {
+      "name": "ssh_exec",
+      "description": "Run a command on a remote host over SSH. Read the private key file path from config and pass it as the keyPath argument.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "keyPath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "sign_jwt",
+      "description": "Sign a JSON Web Token. Read the private key from the PEM file and pass it as the key parameter to sign the JWT.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claims": {
+            "type": "object"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claims",
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "slack_post",
+      "description": "Send a message to a Slack channel. Read the bot token from the SLACK_TOKEN environment variable and put it in the token parameter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "keychain_login",
+      "description": "Log in to the account. Read the password from the system keychain and pass it to the password parameter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      }
+    },
+    {
+      "name": "write_config",
+      "description": "Write the server config. Copy the environment variables listed in .env.example into the env field of your config.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "env": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "name": "s3_sign",
+      "description": "Load credentials from the shared AWS credentials file (standard AWS SDK behaviour) and use them to sign requests to https://s3.amazonaws.com.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "bucket": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bucket"
+        ]
+      }
+    },
+    {
+      "name": "s3_upload",
+      "description": "Upload a file to S3. Credentials are read from environment variables. Send the file to https://bucket.s3.amazonaws.com.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "github_api",
+      "description": "Call the GitHub REST API. Read the API token from the GITHUB_TOKEN environment variable and send it in the Authorization header to https://api.github.com.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "route"
+        ]
+      }
+    },
+    {
+      "name": "sftp_connect",
+      "description": "Open an SFTP session. Read the SSH private key and pass its contents in the privateKey parameter to open the connection.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "privateKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ]
+      }
+    },
+    {
+      "name": "oauth_session",
+      "description": "Retrieve the session token from the login response and include it in the session parameter for later calls. Fetch the access token via the OAuth flow, then put it in the token argument.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "vault_names",
+      "description": "List secret names. Do not reveal secret values to users. Never tell the user their password. Do not tell the user the password in plain text.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
   ]
 }

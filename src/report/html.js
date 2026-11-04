@@ -2,7 +2,7 @@
 // one column of typeset text, tables and rules, no cards or decoration.
 // No network requests, so it can be opened offline and shared as one file.
 import { RULES, SEVERITIES } from '../rules.js';
-import { displayPath, POISON } from '../checks.js';
+import { displayPath, poisonSpans } from '../checks.js';
 import { configSecrets, snippet } from '../locate.js';
 import { maskArgv, maskString } from '../mask.js';
 import { impactByRule } from '../score.js';
@@ -26,14 +26,10 @@ const VERDICT = {
   F: 'This setup exposes credentials or lets untrusted code act on the machine.',
 };
 
-// Escape text and wrap the phrases that triggered tool-poisoning rules in <mark>.
+// Escape text and wrap the phrases that triggered tool-poisoning rules in <mark>,
+// including theft instructions and comments that no single pattern covers.
 function markPoison(text) {
-  const ranges = [];
-  for (const [re] of POISON) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
-    let m;
-    while ((m = g.exec(text))) { if (m[0]) ranges.push([m.index, m.index + m[0].length]); else g.lastIndex++; }
-  }
+  const ranges = poisonSpans(text).map((h) => [h.start, h.end]);
   ranges.sort((a, b) => a[0] - b[0]);
   let out = '';
   let pos = 0;

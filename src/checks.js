@@ -664,19 +664,21 @@ const PHONE = String.raw`\+\d[\d ()-]{6,}\d`;
 // What safety guidance keeps from the user ("Do not reveal secret values to users").
 // Hiding a secret protects the user; hiding an action from them is the attack.
 const GUARDED = String.raw`(?:secrets?|(?:api[\s_-]?)?keys?|tokens?|passwords?|passphrases?|credentials?|values?|pins?)`;
-const GUARDED_OBJECT = String.raw`(?!\s+(?:the\s+|any\s+|their\s+|your\s+|its\s+|his\s+|her\s+|raw\s+)?(?:[\w-]+\s+){0,2}${GUARDED}\b)`;
+// Only when the guarded word is the thing withheld: not the subject of a clause ("the token
+// was sent") and not an adjective ("secret instructions", "key steps").
+const GUARDED_NOT_OBJECT = String.raw`\s+(?:was|were|is|are|has|have|had|been|being|got|gets|will|would|did|does|went|instructions?|steps?|actions?|prompts?|tasks?|operations?|commands?|calls?|behaviou?r|purpose|plans?)\b`;
+const GUARDED_OBJECT = String.raw`(?!\s+(?:the\s+|any\s+|their\s+|your\s+|its\s+|his\s+|her\s+|raw\s+)?(?:[\w-]+\s+){0,2}${GUARDED}\b(?!${GUARDED_NOT_OBJECT}))`;
 // Every pattern here must stay linear in its input: gaps are bounded and stop at sentence
 // ends, a tag's attributes stop at the next "<", and a comment body stops at "-->" or "<!--".
 export const POISON = [
-  [/<\s*(important|system|instructions?|secret|hidden|admin)\b[^<>]{0,300}>/i, 'hidden tag', 'inject'],
-  // The lookahead (never backtracked into) checks the comment is closed; the match runs to the keyword.
-  [/<!--(?=(?:(?!-->|<!--)[\s\S]){0,2000}-->)(?:(?!-->)[\s\S]){0,1000}?\b(assistant|model|ai|llm|claude|agent|you must|you should)\b/i, 'instructions in an HTML comment', 'inject'],
+  // The attribute run cannot cross a "<", so each scan ends before the next tag starts.
+  [/<\s*(important|system|instructions?|secret|hidden|admin)\b(?=[^<>]*>)/i, 'hidden tag', 'inject'],
   [/^[ \t]*(?:\[\s*(?:system|admin)\s*\]|#{1,6}[ \t]*system[ \t]+(?:instructions?|message|override|prompt|note)\b)/im, 'fake system header', 'inject'],
   [/\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+)?(?:previous|prior|above|earlier|other|system|original)\s+(?:instructions|prompts?|rules|guidelines)\b(?!\s+(?:in|inside|within|contained|embedded|found)\b)|\b(?:ignore|disregard|forget)\s+(?:your\s+(?:own\s+)?(?:instructions|prompts?|rules|guidelines)\b|all\s+(?:of\s+)?(?:the\s+|your\s+)?(?:instructions|prompts?)\b(?!\s+(?:in|inside|within|contained|embedded|found|on)\b))|\b(?:ignore|disregard)\b[^.\n]{0,30}\b(?:system\s+prompt|safety\s+(?:guidelines|rules|policies))\b|\btakes?\s+priority\s+over\s+(?:the\s+)?(?:user|system)\b/i, 'instruction override', 'override'],
   [new RegExp(String.raw`\b(?:do\s+not|don['’]?t|never|must\s+not|should\s+not|shouldn['’]?t)\s+(?:(?:tell|inform|reveal|disclose|let|say|explain|report)\b${GUARDED_OBJECT}[^.;\n]{0,40}\b(?:user|users|them|anyone|human)\b(?!['’]s)${GUARDED_OBJECT}|(?:notify|alert|mention)\b(?:\s+(?:the\s+)?(?:user|users|them|anyone)\s+(?:about|of|that)\s+(?:this|it|these|that|what|the\s+(?:call|upload|request|step|action|instruction))\b|${GUARDED_OBJECT}[^.;\n]{0,40}\bto\s+(?:the\s+)?(?:user|users|them|anyone|human)\b))|\bwithout\s+(?:telling|informing|notifying|alerting|letting)\s+(?:the\s+)?(?:user|them|anyone)\b|\bkeep\s+(?:this|it|that|these)\s+(?:(?:step|instruction|part|information)\s+)?(?:to\s+yourself|quiet|hidden|from\s+the\s+user)\b|\bkeep\s+quiet\b|\buser\s+(?:does\s+not|doesn['’]?t|need\s+not|needn['’]?t)\s+(?:need\s+to\s+)?(?:know|be\s+told|be\s+informed)\b|\b(?:user|users)\s+(?:must|should|will|may|can)\s+(?:never|not)\s+(?:find\s+out|know|learn|notice|discover|suspect)\s+(?:that|about|of|what|this|it)\b|\b(?:hide|conceal)\s+(?:this|it|these|that)\b[^.\n]{0,30}\bfrom\s+(?:the\s+)?user\b`, 'i'), 'asks the model to hide something from the user', 'conceal'],
   [/\b(?:before|prior\s+to)\s+(?:using|calling|invoking|running)\s+(?:this|any|the)\s+(?:tool|function)\b[^.\n]{0,80}\b(?:read|cat|open|fetch|send|pass|include|copy|upload)\b[^.\n]{0,40}?(?:~[/\\]|\$HOME|%USERPROFILE%|\/\w|\\\w|\.\w+\/|\b(?:(?:ssh|private|api)\s+keys?|credentials?|tokens?|secrets?|passwords?)\b)/i, 'pre-call side task', 'precall'],
-  [/(?<![\w.$-])\.(?:ssh|aws|gnupg|kube|docker|netrc|git-credentials|npmrc|pypirc|pgpass|bash_history|zsh_history|bashrc|zshrc)\b(?![\w-]|\.[A-Za-z])|(?<![\w.$-])\.env\b(?!-)|\bid_(?:rsa|dsa|ecdsa|ed25519)\b(?!\.pub)|\bcredentials\.json\b|\bclaude_desktop_config\b|(?<![\w-])mcp\.json\b|\/etc\/(?:passwd|shadow)\b|\b[\w-]+\.keychain(?:-db)?\b/i, 'references sensitive files', 'target'],
-  [/\b(?:pass|include|put|add|copy|paste|append|insert|place|embed|attach|send)\b(?:[^.\n]|\.(?=\S)){0,100}?\b(?:as|in|into|inside|within|to)\s+(?:the\s+|a\s+)?['"`]?(?:sidenote|side_note|side-note)\b|\b(?:pass|include|put|copy|paste|append|insert|place|embed)\s+(?:its|their|the|this|that|all)\s+(?:full\s+|entire\s+|whole\s+)?(?:contents?|output|text)\b(?:[^.\n]|\.(?=\S)){0,40}?\b(?:as|in|into|inside)\s+(?:the\s+|a\s+)?(?:['"`]?[\w-]{1,30}['"`]?\s+)?(?:parameters?|params?|arguments?|args?|field)\b/i, 'smuggles data through a parameter', 'exfil'],
+  [/(?<![\w.$-])\.(?:ssh|aws|gnupg|kube|docker|netrc|git-credentials|npmrc|pypirc|pgpass|bash_history|zsh_history|bashrc|zshrc)\b(?![\w-]|\.[A-Za-z])|(?<![\w.$-])\.env\b(?!-|\.(?:example|sample|template|tmpl|dist|defaults?)\b)|\bid_(?:rsa|dsa|ecdsa|ed25519)\b(?!\.pub)|\bcredentials\.json\b|\bclaude_desktop_config\b|(?<![\w-])mcp\.json\b|\/etc\/(?:passwd|shadow)\b|(?<![\w-])[\w-]{1,100}\.keychain(?:-db)?\b/i, 'references sensitive files', 'target'],
+  [/\b(?:pass|include|put|add|copy|paste|append|insert|place|embed|attach|send)\b(?:[^.\n]|\.(?=\S)){0,100}?\b(?:as|in|into|inside|within|to)\s+(?:the\s+|a\s+)?['"`]?(?:sidenote|side_note|side-note)\b|\b(?:pass|include|put|copy|paste|append|insert|place|embed)\s+(?:its|their|the|this|that|all)\s+(?:full\s+|entire\s+|whole\s+)?(?:contents?|output|text)\b(?:[^.\n]|\.(?=\S)){0,40}?\b(?:as|in|into|inside)\s+(?:the\s+|a\s+)?(?:['"`]?(?<param>[\w-]{1,30})['"`]?\s+)?(?:parameters?|params?|arguments?|args?|field)\b/i, 'smuggles data through a parameter', 'exfil'],
   [new RegExp(String.raw`\b(?:change|set|replace|redirect|switch|override|route)\s+(?:the\s+|all\s+|every\s+)?(?:recipient|destination|receiver|to\s+address|phone\s+number|email\s+address|messages?)s?\b[^.]{0,30}?\bto\s+['"\x60]?(?:${PHONE}|${EMAIL}|https?:\/\/)|\b(?:always\s+)?(?:bcc|cc)\s+(?:every|all|each)\b[^.\n]{0,40}?(?:${PHONE}|${EMAIL})`, 'i'), 'redirects messages to a fixed recipient', 'exfil'],
   [/\b(?:curl|wget)\b[^\n|;]{0,80}?\s(?:(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form)[\s=]+['"]?(?:[\w-]+=)?@|(?:-T|--upload-file|--post-file|--body-file)[\s=]+['"]?(?:~|\$|%|\.{0,2}[/\\]|[A-Za-z]:\\|[\w-]*\.\w))/i, 'uploads a local file', 'dest'],
   // The lookahead skips verbs with no address in reach; the address must start a token.
@@ -685,88 +687,167 @@ export const POISON = [
   [/\b(?:decode|base64[- ]decode|atob|unescape|rot13)\b[^.\n]{0,40}\b(?:follow|execute|run|obey|carry\s+out)\b/i, 'asks the model to decode and follow hidden text', 'obfusc'],
 ];
 
+// Instructions in an HTML comment. Scanned in code rather than with a pattern so that a
+// nested "<!--" cannot end the comment early and each character is read once: a comment
+// runs from "<!--" to the first "-->", as in HTML, and an unclosed one is not a comment.
+export const COMMENT_LABEL = 'instructions in an HTML comment';
+const COMMENT_WORD = /\b(?:assistant|model|ai|llm|claude|agent|you\s+must|you\s+should)\b/i;
+function findComments(text) {
+  const out = [];
+  for (let pos = 0; ;) {
+    const i = text.indexOf('<!--', pos);
+    if (i < 0) break;
+    const j = text.indexOf('-->', i + 4);
+    if (j < 0) break;
+    const m = COMMENT_WORD.exec(text.slice(i + 4, j));
+    if (m) out.push({ start: i, end: i + 4 + m.index + m[0].length });
+    pos = j + 3;
+  }
+  return out;
+}
+
 // Not a reason by itself: makes a parameter-smuggling or sending instruction critical.
 const SECRET_DATA = /\b(?:ssh|private|gpg|pgp)\s+keys?\b|\bapi[\s_-]?keys?\b|\bpasswords?\b|\baccess\s+tokens?\b|\benvironment\s+variables?\b|\benv\s+vars?\b|\b(?:conversation|chat|message)\s+(?:history|so\s+far|log)\b|\b(?:full|entire|whole)\s+conversation\b|\b(?:previous|last|recent)\s+messages\b|\bseed\s+phrase\b/i;
 
 // Data theft through a parameter or to an outside address, whatever the parameter is called:
 // "read <secret> and put it in the X parameter", "copy <secret> into X", "send <secret> to
-// https://...". It needs both a sensitive source and a hand-off, so "pass the API key in the
-// apiKey parameter" or "send the report to bob@example.com" stay clean.
+// https://...", "set the X parameter to the contents of <secret>". It needs a sensitive
+// source handed to a place it does not belong. Using a credential for the tool's own job
+// is not theft: "read the bot token from SLACK_TOKEN and put it in the token parameter",
+// "pass the private key as the key parameter to sign the JWT", "load credentials and use
+// them to sign requests to https://s3.amazonaws.com".
 const SENSITIVE_FILE = POISON.find(([, , kind]) => kind === 'target')[0].source;
 // Sources the model has to go and get; naming them next to a hand-off is enough.
-const SOURCE_STRONG = String.raw`${SENSITIVE_FILE}|\b(?:environment|env)\s+var(?:iable)?s?\b|\b(?:conversation|chat|message)\s+(?:history|so\s+far|log|transcript)\b|\b(?:full|entire|whole|complete)\s+(?:conversation|chat|transcript)\b|\b(?:previous|prior|earlier|last|recent)\s+messages\b|\b(?:ssh|private|gpg|pgp)\s+keys?\b|\bseed\s+phrase\b|\b(?:mnemonic|recovery)\s+phrase\b|\b(?:system\s+prompt|your\s+instructions)\b|\b(?:all|every)\s+(?:of\s+(?:the|your)\s+)?(?:api[\s_-]?keys?|tokens?|passwords?|secrets?|credentials?)\b`;
+const SOURCE_OTHER = String.raw`\b(?:environment|env)\s+var(?:iable)?s?\b|\b(?:conversation|chat|message)\s+(?:history|so\s+far|log|transcript)\b|\b(?:full|entire|whole|complete)\s+(?:conversation|chat|transcript)\b|\b(?:previous|prior|earlier|last|recent)\s+messages\b|\b(?:ssh|private|gpg|pgp)\s+keys?\b|\bseed\s+phrase\b|\b(?:mnemonic|recovery)\s+phrase\b|\b(?:system\s+prompt|your\s+instructions)\b|\b(?:all|every)\s+(?:of\s+(?:the|your)\s+)?(?:api[\s_-]?keys?|tokens?|passwords?|secrets?|credentials?)\b`;
 // Secrets a tool may legitimately ask for as input; they only count when the text asks the
 // model to read or collect them first.
 const SOURCE_WEAK = String.raw`\bapi[\s_-]?keys?\b|\bpasswords?\b|\b(?:access|auth|bearer|session|refresh)\s+tokens?\b|\bsecrets?\b|\bcredentials?\b|\bcookies?\b`;
+const PARAM = String.raw`(?:parameters?|params?|arguments?|args?|fields?|property)`;
+const NAME = String.raw`['"\x60]?([\w.-]{1,40})['"\x60]?`;
 export const STEAL = {
-  source: new RegExp(`(${SOURCE_STRONG})|${SOURCE_WEAK}`, 'gi'),
-  file: new RegExp(`^(?:${SENSITIVE_FILE})$`, 'i'),
+  // Group 1: a sensitive file; group 2: another sensitive source; neither: a plain secret.
+  source: new RegExp(`(${SENSITIVE_FILE})|(${SOURCE_OTHER})|${SOURCE_WEAK}`, 'gi'),
   // Content verbs move the data itself; "pass ~/.ssh/id_rsa as keyPath" only moves a path.
-  move: /\b(?:(copy|paste|dump|leak|exfiltrate|smuggle|stuff|embed|upload|transmit)|include|insert|append|put|place|pass|send|forward|post|add|attach|submit|supply)\b/gi,
-  gather: /\b(?:(read|open|cat|collect|gather|grab|extract|dump|copy|harvest|scrape|steal)|get|fetch|obtain|retrieve|load|take|look\s+up|find|access)\b/gi,
-  handoff: /\b(?:put|pass|include|add|copy|paste|append|insert|place|embed|attach|send|stuff|write|store|save|forward|post|upload|submit|provide|supply|set|use|enter|fill)\s+(?:it|them|its\s+(?:full\s+)?contents?|their\s+(?:full\s+)?contents?|the\s+(?:full\s+|entire\s+|whole\s+)?(?:contents?|file|keys?|values?|data|text|result|output)|this|that|these|those|everything|all\s+of\s+(?:it|them))\b/gi,
-  sink: new RegExp(String.raw`\b(?:as|in|into|inside|within|to|through|via|under|using)\s+(?:the\s+|a\s+|an\s+|your\s+|its\s+|this\s+tool['’]?s\s+)?(?:(?:['"\x60]?[\w.-]{1,40}['"\x60]?\s+)?(?:parameters?|params?|arguments?|args?|fields?|property)\b|['"\x60]?(?:sidenote|side_note|side-note)\b)|(https?:\/\/[^\s"'<>)]+|${EMAIL}|${PHONE})`, 'gi'),
-  boundary: /[.!?](?=\s)|\n/g,
+  move: /\b(?:(copy|paste|dump|leak|exfiltrate|smuggle|stuff|embed|upload|transmit)|include|insert|append|put|place|pass|send|forward|post|add|attach|submit|supply|e-?mail|mail)\b/gi,
+  gather: /\b(?:read|open|cat|collect|gather|grab|extract|dump|copy|harvest|scrape|steal|get|fetch|obtain|retrieve|load|take|look\s+up|find|access)\b/gi,
+  // Group 1: the verb; group 2: a word that refers back ("it", "its contents").
+  handoff: /\b(put|pass|include|add|copy|paste|append|insert|place|embed|attach|send|stuff|write|store|save|forward|post|upload|submit|provide|supply|set|use|enter|fill|e-?mail|mail|transmit)\s+(?:(it|them|its\s+(?:full\s+|entire\s+|raw\s+)?(?:contents?|values?|text|data|lines|output|body)|their\s+(?:full\s+|entire\s+|raw\s+)?(?:contents?|values?|text|data|lines|output)|this|that|these|those|everything|all\s+of\s+(?:it|them)|what\s+you\s+(?:find|found|read|get|got|see))|the\s+(?:full\s+|entire\s+|whole\s+)?(?:contents?|file|keys?|values?|data|text|result|output))\b/gi,
+  // Group 1 or 3: the parameter's name; 2: a side note; 4: an outside address.
+  sink: new RegExp(String.raw`\b(?:as|in|into|inside|within|to|through|via|under|using)\s+(?:the\s+|a\s+|an\s+|your\s+|its\s+|this\s+tool['’]?s\s+)?(?:(?:value|contents?)\s+of\s+(?:the\s+|a\s+)?)?(?:(?:${NAME}\s+)?${PARAM}\b|['"\x60]?(sidenote|side_note|side-note)\b)|\b(?:in|with)\s+(?:your|the|this)\s+(?:tool\s+)?(?:call|request)\s+(?:as|in)\s+(?:the\s+)?${NAME}|(https?:\/\/[^\s"'<>)]+|${EMAIL}|${PHONE})`, 'gi'),
+  // "Set the notes parameter to the contents of ...", "the notes field must contain ...".
+  // Group 1 or 2: the parameter's name; 3: "the contents of".
+  setsink: new RegExp(String.raw`(?:\b(?:set|fill|populate)\s+(?:the\s+|a\s+)?${NAME}\s+${PARAM}\s+(?:to|with)|(?<![\w.-])${NAME}\s+${PARAM}\s+(?:must|should|shall|will)\s+(?:always\s+)?(?:contain|include|hold|be\s+set\s+to|be\s+filled\s+with|be))\s+(?:(?:the\s+)?(?:full\s+|entire\s+|whole\s+|raw\s+)?(contents?|text|output|data|values?|body)\s+of\s+)?(?:the\s+(?:file\s+)?)?['"\x60]?(?:cat\s+)?`, 'gi'),
+  boundary: /(?:[.!?](?=\s)|\n)\s*/g,
 };
+// Parameter names where a credential belongs. Split on case and punctuation, so keyPath,
+// api_key and X-Auth-Token all count.
+const CREDENTIAL_NAME = new Set(['token', 'tokens', 'key', 'keys', 'apikey', 'secret', 'secrets', 'password', 'passwords', 'passwd', 'pwd', 'passphrase',
+  'pass', 'auth', 'authorization', 'authentication', 'credential', 'credentials', 'cred', 'creds', 'bearer', 'env', 'environment', 'cert', 'certificate',
+  'signature', 'sig', 'signing', 'header', 'headers', 'session', 'cookie', 'cookies', 'jwt', 'pem', 'login', 'otp', 'pin', 'keychain', 'keyring', 'vault']);
+const credentialName = (name) => !!name && name.replace(/([a-z\d])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z\d]+/).some((w) => CREDENTIAL_NAME.has(w));
+// "the private key file path", "the environment variable names": a reference, not the secret.
+const NOT_CONTENT = /^\s+(?:file\s+)?(?:paths?|locations?|filenames?|file\s+names?|names?|ids?|fingerprints?|alias(?:es)?|lengths?|formats?|types?)\b/i;
+// "Credentials are read from environment variables" describes the tool; it asks for nothing.
+const PASSIVE = /\b(?:is|are|was|were|be|been|being)\s+(?:\w+ly\s+)?$/i;
+// "Use them to sign requests to https://..." is authentication, not sending them anywhere.
+const NOT_TO_ADDRESS = new Set(['use', 'set', 'enter', 'fill']);
+const PURPOSE = /\b(?:to|in\s+order\s+to)\s+(?:sign|authenticate|authorize|log\s*in|connect)\b|\b(?:in|as|via|using)\s+(?:the\s+|an?\s+)?(?:[\w-]+\s+)?(?:header|bearer\s+token)\b/i;
+const SWEEPING = /^(?:full|entire|whole|complete|all|every)\b|so\s+far$|phrase$/i;
 
-function allMatches(re, text, cap = 2000) {
+function allMatches(re, text) {
   const out = [];
   re.lastIndex = 0;
   let m;
-  while ((m = re.exec(text)) && out.length < cap) {
+  while ((m = re.exec(text))) {
     if (!m[0]) { re.lastIndex++; continue; }
     out.push({ start: m.index, end: m.index + m[0].length, m });
   }
   return out;
 }
 
-/** Find "collect a secret, then hand it to a parameter or an address". Linear: one pass per pattern. */
-function findTheft(text) {
-  const bounds = allMatches(STEAL.boundary, text, Infinity).map((b) => b.start);
-  // Number of sentence ends before position p (binary search).
+// Index of the last item of a list sorted by position that ends at or before p, and of the
+// first that starts at or after p.
+const lastEndingBy = (list, p) => { let lo = 0; let hi = list.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].end <= p) lo = mid + 1; else hi = mid; } return lo - 1; };
+const firstStartingAt = (list, p) => { let lo = 0; let hi = list.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].start < p) lo = mid + 1; else hi = mid; } return lo; };
+
+/**
+ * Find "collect a secret, then hand it to a parameter or an address" (at most `limit` spans).
+ * Every pattern runs once over the text with no cap on its matches, and each source looks
+ * at a bounded number of neighbours, so the cost is linear in the text.
+ */
+function findTheft(text, limit = 1) {
+  const found = [];
+  const bounds = allMatches(STEAL.boundary, text).map((b) => b.start);
+  // Number of sentence ends before position p.
   const sentence = (p) => { let lo = 0; let hi = bounds.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (bounds[mid] < p) lo = mid + 1; else hi = mid; } return lo; };
-  const sources = allMatches(STEAL.source, text).map((x) => ({ ...x, strong: !!x.m[1], file: !!x.m[1] && STEAL.file.test(x.m[0]) }));
+  const sources = allMatches(STEAL.source, text)
+    .map((x) => ({ ...x, file: !!x.m[1], strong: !!(x.m[1] || x.m[2]), sweeping: SWEEPING.test(x.m[0]) }))
+    .filter((x) => !NOT_CONTENT.test(text.slice(x.end, x.end + 40)));
+  if (!sources.length) return found;
   const moves = allMatches(STEAL.move, text).map((x) => ({ ...x, content: !!x.m[1] }));
-  const gathers = allMatches(STEAL.gather, text).map((x) => ({ ...x, any: !!x.m[1] }));
-  const handoffs = allMatches(STEAL.handoff, text);
-  const sinks = allMatches(STEAL.sink, text).map((x) => ({ ...x, dest: !!x.m[1] }));
-  // The last item of a sorted list that ends at or before p, or the first that starts at or after p.
-  const before = (list, p) => { let lo = 0; let hi = list.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].end <= p) lo = mid + 1; else hi = mid; } return lo - 1; };
-  const after = (list, p) => { let lo = 0; let hi = list.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].start < p) lo = mid + 1; else hi = mid; } return lo; };
+  const gathers = allMatches(STEAL.gather, text).filter((g) => !PASSIVE.test(text.slice(Math.max(0, g.start - 30), g.start)));
+  const handoffs = allMatches(STEAL.handoff, text).map((x) => ({ ...x, verb: x.m[1].toLowerCase(), back: !!x.m[2] }));
+  const sinks = allMatches(STEAL.sink, text).map((x) => ({ ...x, dest: !!x.m[4], generic: !!x.m[3], name: x.m[1] || x.m[3] || null }));
+  const setsinks = allMatches(STEAL.setsink, text).map((x) => ({ ...x, name: x.m[1] || x.m[2], contents: !!x.m[3] }));
+  // A parameter named for the secret (token, apiKey, password) is where it belongs.
+  const belongs = (k, s, sweep) => !k.dest && !sweep && credentialName(k.name);
+  // A plain secret named next to "in the request as X" is how most APIs authenticate.
+  const fitsSource = (k, s) => !(k.generic && !s.strong);
   const sinkAfter = (p, within, ok) => {
-    for (let i = after(sinks, p); i < sinks.length && sinks[i].start - p <= within; i++) if (ok(sinks[i])) return sinks[i];
+    for (let i = firstStartingAt(sinks, p); i < sinks.length && sinks[i].start - p <= within; i++) if (ok(sinks[i])) return sinks[i];
     return null;
   };
+  const overlaps = (start, end) => found.some((f) => start < f.end && end > f.start);
+  const add = (start, end, dest) => {
+    if (overlaps(start, end)) return false;
+    found.push({ start, end, dest });
+    return found.length >= limit;
+  };
   for (const s of sources) {
+    if (overlaps(s.start, s.end)) continue;
+    const ss = sentence(s.start);
     // "read <source> ... put it in <sink>": gather verb, source, a hand-off naming it, the sink.
-    for (let gi = before(gathers, s.start), n = 0; gi >= 0 && n < 4 && s.start - gathers[gi].end <= 160; gi--, n++) {
-      const g = gathers[gi];
-      // A plain secret must be the object of the verb ("read the user's API key"), not a
-      // word further on ("read the docs to find your API key").
-      if (!s.strong && (!g.any || !/^\s+(?:[\w'’-]+\s+){0,3}$/.test(text.slice(g.end, s.start)))) continue;
-      for (let hi = after(handoffs, s.end), k = 0; hi < handoffs.length && k < 4 && handoffs[hi].start - s.end <= 200; hi++, k++) {
-        const h = handoffs[hi];
-        const sink = sinkAfter(h.end, 60, () => true);
-        if (sink && sentence(sink.end) - sentence(g.start) <= 1) return { start: g.start, end: sink.end, dest: sink.dest };
-      }
+    // Only the nearest gather verb matters: it is the closest one in the sentence, and the
+    // only one that can have a plain secret as its object.
+    let hit = null;
+    const g = gathers[lastEndingBy(gathers, s.start)];
+    // A plain secret must be the object of the verb ("fetch the user's password"), not a
+    // word further on ("read the docs to find your API key").
+    const gathered = g && s.start - g.end <= 160 && sentence(g.start) === ss
+      && (s.strong || /^\s+(?:[\w'’-]+\s+){0,3}$/.test(text.slice(g.end, s.start)));
+    // Every hand-off within reach is tried; the distance limits bound the work, not a count.
+    for (let hi = gathered ? firstStartingAt(handoffs, s.end) : handoffs.length; hi < handoffs.length && handoffs[hi].start - s.end <= 200; hi++) {
+      const h = handoffs[hi];
+      const hs = sentence(h.start);
+      // A later sentence has to refer back to the secret: "Read X. Then put it in ...".
+      if (hs !== ss && (!h.back || hs - ss > 1)) continue;
+      const sink = sinkAfter(h.end, 60, (k2) => sentence(k2.start) === hs && fitsSource(k2, s)
+        && (k2.dest ? !NOT_TO_ADDRESS.has(h.verb) && !PURPOSE.test(text.slice(h.end, k2.start)) : !belongs(k2, s, s.sweeping)));
+      if (sink) { hit = { start: g.start, end: sink.end, dest: sink.dest }; break; }
     }
+    if (hit) { if (add(hit.start, hit.end, hit.dest)) return found; continue; }
     // "copy <source> into <sink>" in one clause. A file's path is not its contents, so moving a
     // file needs a content verb or "the contents of"; a plain secret needs an outside address.
-    const mi = before(moves, s.start);
-    const mv = moves[mi];
-    if (!mv || s.start - mv.end > 100 || sentence(s.start) !== sentence(mv.start)) continue;
+    const mv = moves[lastEndingBy(moves, s.start)];
+    if (!mv || s.start - mv.end > 100 || sentence(mv.start) !== ss) continue;
     const between = text.slice(mv.end, s.start);
-    const contents = mv.content || /\bcontents?\s+of\b/i.test(between);
+    const contents = mv.content || /\b(?:contents?|text|output|data|values?)\s+of\b/i.test(between);
     // "Pass the conversation history in the messages parameter" is how a chat tool works;
     // "the full conversation so far" or "every API key" is not.
-    const sweeping = /^(?:full|entire|whole|complete|all|every)\b|so\s+far$|phrase$/i.test(s.m[0]) || /\byour\s+$/i.test(between);
-    // A plain secret moved into a field ("copy the access token into the token field") is how
-    // auth flows work; it only counts when sent to an outside address.
-    const toParam = s.file ? contents : s.strong && (mv.content || sweeping);
-    const sink = sinkAfter(s.end, 120, (k) => sentence(k.start) === sentence(s.start) && (k.dest ? (contents || !s.file) : toParam));
-    if (sink) return { start: mv.start, end: sink.end, dest: sink.dest };
+    const sweep = s.sweeping || /\byour\s+$/i.test(between);
+    const toParam = s.file ? contents : s.strong && (mv.content || sweep);
+    const sink = sinkAfter(s.end, 120, (k) => sentence(k.start) === ss && fitsSource(k, s)
+      && (k.dest ? (contents || !s.file) && !PURPOSE.test(text.slice(s.end, k.start)) : toParam && !belongs(k, s, sweep)));
+    if (sink && add(mv.start, sink.end, sink.dest)) return found;
   }
-  return null;
+  // "Set the notes parameter to the contents of <source>": the sink comes first.
+  for (const k of setsinks) {
+    const s = sources[firstStartingAt(sources, k.end)];
+    if (!s || s.start - k.end > 30 || /\s/.test(text.slice(k.end, s.start)) || !s.strong || belongs(k, s, s.sweeping)) continue;
+    if (!(k.contents || (!s.file && s.sweeping))) continue;
+    if (add(k.start, s.end, false)) return found;
+  }
+  return found.sort((a, b) => a.start - b.start);
 }
 
 // Greek and Cyrillic letters that look like Latin ones, mapped before matching.
@@ -876,32 +957,43 @@ function decodeBase64Text(s) {
  * Find poisoning signals in a list of text segments.
  * @returns {{full: string, hits: {label: string, kind: string, start: number, end: number}[]}}
  */
-function findSignals(segments, nested = false) {
+function findSignals(segments, nested = false, allTheft = false) {
   const full = segments.map((s) => s.text).join('\n');
   const bounds = [];
   let pos = 0;
   for (const s of segments) { bounds.push([pos, pos + s.text.length, s.kind]); pos += s.text.length + 1; }
-  const kindAt = (idx) => (bounds.find(([a, b]) => idx >= a && idx <= b)?.[2] ?? 'prose');
+  const kindAt = (idx) => {
+    let lo = 0; let hi = bounds.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (bounds[mid][1] < idx) lo = mid + 1; else hi = mid; }
+    return bounds[lo]?.[2] ?? 'prose';
+  };
   const { norm, map, changed } = normalizeForMatch(full);
   const hits = [];
   let lookalike = null;
-  for (const [re, label, kind] of POISON) {
+  // Every match is kept, not only the first few, so a flood of harmless matches cannot
+  // push the one that matters (a file next to an upload) out of the list.
+  const record = (index, length, label, kind) => {
+    const start = map[index];
+    const end = map[index + length] ?? full.length;
+    // A credential path in a default or enum is what an SSH or cloud tool legitimately carries.
+    if (kind === 'target' && kindAt(start) === 'value') return;
+    hits.push({ label, kind, start, end });
+    if (!lookalike && changed.slice(index, index + length).some(Boolean)) lookalike = { start, end };
+  };
+  for (const [i, [re, label, kind]] of POISON.entries()) {
     const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
     let m;
-    let n = 0;
-    while ((m = g.exec(norm)) && n++ < 50) {
+    while ((m = g.exec(norm))) {
       if (!m[0]) { g.lastIndex++; continue; }
-      const start = map[m.index];
-      const end = map[m.index + m[0].length] ?? full.length;
-      // A credential path in a default or enum is what an SSH or cloud tool legitimately carries.
-      if (kind === 'target' && kindAt(start) === 'value') continue;
-      hits.push({ label, kind, start, end });
-      if (!lookalike && changed.slice(m.index, m.index + m[0].length).some(Boolean)) lookalike = { start, end };
+      // "Pass its contents in the privateKey parameter" puts a key where a key belongs.
+      if (credentialName(m.groups?.param)) continue;
+      record(m.index, m[0].length, label, kind);
     }
+    // Comments come right after hidden tags, so the reasons keep their usual order.
+    if (i === 0) for (const c of findComments(norm)) record(c.start, c.end - c.start, COMMENT_LABEL, 'inject');
   }
   if (lookalike) hits.push({ label: 'look-alike characters', kind: 'obfusc', ...lookalike });
-  const theft = findTheft(norm);
-  if (theft) {
+  for (const theft of findTheft(norm, allTheft ? 20 : 1)) {
     hits.push({ label: theft.dest ? 'sends secrets to an outside address' : 'smuggles data through a parameter', kind: 'steal',
       start: map[theft.start], end: map[theft.end] ?? full.length });
   }
@@ -939,6 +1031,20 @@ function findSignals(segments, nested = false) {
   return { full, hits };
 }
 
+// Whether a hit of kind a lies within gap characters of a hit of kind b. Sorted search, so
+// thousands of hits stay cheap.
+function nearKinds(hits, a, b, gap) {
+  const B = hits.filter((h) => h.kind === b).sort((x, y) => x.start - y.start);
+  if (!B.length) return false;
+  let longest = 0;
+  for (const y of B) longest = Math.max(longest, y.end - y.start);
+  for (const x of hits) {
+    if (x.kind !== a) continue;
+    for (let i = firstStartingAt(B, x.start - gap - longest); i < B.length && B[i].start - x.end <= gap; i++) if (x.start - B[i].end <= gap) return true;
+  }
+  return false;
+}
+
 // Severity scales with the evidence: one weak signal is low, one manipulative signal
 // is medium (high for concealment), and critical needs a combination that points at
 // stealing data or hiding actions, or an outright instruction override.
@@ -951,7 +1057,7 @@ function poisonSeverity(kinds, hits = []) {
   // An address next to a credential file ("curl -d @~/.netrc https://...") is theft. An HTTP,
   // mail or webhook tool that names its own API key or password as configuration is not,
   // so secret nouns alone no longer escalate an address, and a file must be close by.
-  const near = (a, b, gap) => hits.some((x) => x.kind === a && hits.some((y) => y.kind === b && y.start - x.end <= gap && x.start - y.end <= gap));
+  const near = (a, b, gap) => nearKinds(hits, a, b, gap);
   if (k('dest') && (near('dest', 'target', 120) || k('conceal') || k('inject'))) return 'critical';
   if (k('conceal') && (k('target') || k('inject') || k('exec') || k('precall') || k('obfusc'))) return 'critical';
   if (k('inject') && (k('target') || k('exec') || k('precall'))) return 'critical';
@@ -972,15 +1078,32 @@ function poisonSeverity(kinds, hits = []) {
  * Evidence for a finding: the whole text when it is short, otherwise windows around
  * each match so the offending passage is always shown.
  */
-// Strongest signals first, so a few weak hits early in a padded text cannot use up the
-// evidence budget before the real injection is reached.
+// Windows are ranked by the severity of the hits inside them, so the passage that set the
+// finding's severity comes first and decoys cannot use up the budget. Ties go to the
+// stronger kind of hit, then to the earlier one.
 const EVIDENCE_RANK = { steal: 0, override: 0, encoded: 0, inject: 1, exfil: 1, conceal: 1, precall: 2, obfusc: 2, dest: 3, exec: 3, blob: 4, target: 5 };
+const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+const WINDOW = 200;
 
 function evidenceAround(full, hits, limit = 1200) {
   if (full.length <= limit) return full;
-  const ranked = hits.filter((h) => h.kind in EVIDENCE_RANK)
-    .map((h) => ({ rank: EVIDENCE_RANK[h.kind], a: Math.max(0, h.start - 200), b: Math.min(full.length, h.end + 200) }))
-    .sort((x, y) => x.rank - y.rank || x.a - y.a);
+  // Hits longer than a window (an encoded blob) are few and checked one by one.
+  const sorted = hits.filter((h) => h.end - h.start <= 1000).sort((x, y) => x.start - y.start);
+  const long = hits.filter((h) => h.end - h.start > 1000);
+  const localSeverity = (a, b) => {
+    const inside = long.filter((h) => h.start < b && h.end > a);
+    for (let i = firstStartingAt(sorted, a - 1000); i < sorted.length && sorted[i].start < b && inside.length < 200; i++) {
+      if (sorted[i].end > a) inside.push(sorted[i]);
+    }
+    return SEVERITY_RANK[poisonSeverity(new Set(inside.map((h) => h.kind)), inside)] ?? 4;
+  };
+  const ranked = sorted.filter((h) => h.kind in EVIDENCE_RANK)
+    .map((h) => {
+      const a = Math.max(0, h.start - WINDOW);
+      const b = Math.min(full.length, h.end + WINDOW);
+      return { sev: localSeverity(a, b), rank: EVIDENCE_RANK[h.kind], a, b };
+    })
+    .sort((x, y) => x.sev - y.sev || x.rank - y.rank || x.a - y.a);
   if (!ranked.length) return `${full.slice(0, limit)} ...`;
   const chosen = [];
   let total = 0;
@@ -990,6 +1113,7 @@ function evidenceAround(full, hits, limit = 1200) {
     if (chosen.length && total + (w.b - w.a) > limit + 300) continue;
     chosen.push(w);
     total += w.b - w.a;
+    if (total >= limit + 300) break;
   }
   chosen.sort((x, y) => x.a - y.a);
   const merged = [];
@@ -1000,6 +1124,22 @@ function evidenceAround(full, hits, limit = 1200) {
   }
   return merged.map(([a, b]) => `${a > 0 ? '... ' : ''}${full.slice(a, b)}${b < full.length ? ' ...' : ''}`).join('\n');
 }
+
+/**
+ * The passages of a text that tool-poisoning rules matched, for highlighting in reports:
+ * pattern matches, instructions in comments and theft instructions.
+ * @returns {{start: number, end: number, label: string, kind: string}[]} sorted by position
+ */
+export function poisonSpans(text) {
+  if (!text) return [];
+  const { hits } = findSignals([{ text: String(text), kind: 'prose' }], true, true);
+  return hits.filter((h) => h.kind !== 'secrets' && h.label !== 'invisible Unicode characters' && h.end > h.start)
+    .map(({ start, end, label, kind }) => ({ start, end, label, kind }))
+    .sort((x, y) => x.start - y.start || y.end - x.end);
+}
+
+/** Order spans by how much they matter, for a short "found:" list. */
+export function spanRank(kind) { return EVIDENCE_RANK[kind] ?? 6; }
 
 const TOO_LARGE = 'too large to check fully';
 

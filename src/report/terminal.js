@@ -3,7 +3,7 @@
 // --verbose adds compiler-style diagnostics that point at the exact config
 // line of every finding.
 import { RULES, SEVERITIES } from '../rules.js';
-import { displayPath, POISON } from '../checks.js';
+import { displayPath, poisonSpans, spanRank } from '../checks.js';
 import { impactByRule } from '../score.js';
 import { snippet } from '../locate.js';
 import { safe, dispWidth, splitW, truncW, padW } from './text.js';
@@ -95,7 +95,8 @@ function renderDiagnostics(result, { color = false, width = 100 } = {}) {
     }
     if (f.id === 'MCS016' && f.evidence) {
       const found = [];
-      for (const [re] of POISON) { const m = f.evidence.match(re); if (m && m[0].trim()) found.push(`"${safe(m[0].replace(/\s+/g, ' ').trim())}"`); }
+      const spans = poisonSpans(f.evidence).sort((a, b) => spanRank(a.kind) - spanRank(b.kind) || a.start - b.start);
+      for (const h of spans) { const t = f.evidence.slice(h.start, h.end).replace(/\s+/g, ' ').trim(); if (t) found.push(`"${safe(t.length > 160 ? `${t.slice(0, 157)}...` : t)}"`); }
       if (found.length) note('found', [...new Set(found)].slice(0, 4).join(', '), pad);
     }
     if (f.server) note('server', safe(`${f.server}${f.client ? ` (${f.client})` : ''}`), pad);
