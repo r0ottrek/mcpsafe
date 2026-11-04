@@ -45,7 +45,9 @@ test('malicious corpus: every poisoned tool is detected, with severity matching 
   for (const t of evil) {
     const hit = poison.get(t.name);
     assert.ok(hit, `${t.name} must be flagged`);
-    assert.equal(hit.severity, notCritical[t.name] || 'critical', `${t.name}: ${hit.message}`);
+    // Concealment alone (hide_only, hide_only_find_out, ...) is high, not critical.
+    const expected = notCritical[t.name] || (t.name.startsWith('hide_only') ? 'high' : 'critical');
+    assert.equal(hit.severity, expected, `${t.name}: ${hit.message}`);
   }
   // Shadowing attacks also name the other server's tools, including the client-prefixed form.
   for (const [tool, other] of [['get_fact_of_the_day', 'send_message'], ['get_fact_of_the_day', 'list_chats'], ['wa_no_tags', 'send_message'],
