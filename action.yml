@@ -22,7 +22,7 @@ inputs:
     description: 'Where to write the SARIF file (upload it with github/codeql-action/upload-sarif).'
     default: 'mcpsafe.sarif'
   html:
-    description: 'Optional path for an HTML report.'
+    description: 'Optional path for an HTML report. Any file name works. A file that already exists is replaced only if its name ends in .html or it is an earlier mcpsafe report.'
     default: ''
 
 outputs:
@@ -35,6 +35,9 @@ outputs:
   findings:
     description: 'Number of findings.'
     value: ${{ steps.scan.outputs.findings }}
+  complete:
+    description: '"true" if every config was read, "false" if one could not be read or parsed (then score, grade and findings cover only the files that were read).'
+    value: ${{ steps.scan.outputs.complete }}
   sarif:
     description: 'Path to the SARIF file.'
     value: ${{ inputs.sarif }}
@@ -56,7 +59,8 @@ runs:
         bin="$GITHUB_ACTION_PATH/bin/mcpsafe.js"
         args=(--no-home "$MCPSAFE_PATH" --sarif "$MCPSAFE_SARIF" --markdown "$GITHUB_STEP_SUMMARY")
         [ -n "$MCPSAFE_IGNORE" ] && args+=(--ignore "$MCPSAFE_IGNORE")
-        [ -n "$MCPSAFE_HTML" ] && args+=(--html "$MCPSAFE_HTML")
+        # --html=<file> takes any name; "--html <file>" only takes one ending in .html.
+        [ -n "$MCPSAFE_HTML" ] && args+=("--html=$MCPSAFE_HTML")
         [ -n "$MCPSAFE_MIN_SCORE" ] && args+=(--min-score "$MCPSAFE_MIN_SCORE")
         [ -n "$MCPSAFE_FAIL_ON" ] && [ "$MCPSAFE_FAIL_ON" != "none" ] && args+=(--fail-on "$MCPSAFE_FAIL_ON")
 
@@ -65,7 +69,7 @@ runs:
         node "$bin" "${json_args[@]}" > "$RUNNER_TEMP/mcpsafe.json" || true
         node -e '
           const r = require(process.argv[1]);
-          const out = [`score=${r.score.value}`, `grade=${r.score.grade}`, `findings=${r.findings.length}`].join("\n");
+          const out = [`score=${r.score.value}`, `grade=${r.score.grade}`, `findings=${r.findings.length}`, `complete=${r.complete !== false}`].join("\n");
           require("fs").appendFileSync(process.env.GITHUB_OUTPUT, out + "\n");
           for (const e of r.errors || []) {
             const file = require("path").relative(process.cwd(), e.path || "");

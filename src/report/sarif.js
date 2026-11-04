@@ -31,13 +31,41 @@ function descriptor(id, base, severity) {
 }
 
 // A relative URI reference for a file, with each path segment percent-encoded.
-// A path on another drive cannot be made relative and becomes a file: URI.
+// A file outside the root (a path with "..", or on another drive) becomes an
+// absolute file: URI, since code scanning resolves relative URIs against the
+// repository root.
 function uriOf(file, root) {
   if (!file) return 'unknown';
   const rel = path.relative(root, file);
-  const abs = path.isAbsolute(rel) || /^[A-Za-z]:/.test(rel);
-  const parts = rel.split(/[\\/]/).map((p, i) => (abs && i === 0 && /^[A-Za-z]:$/.test(p) ? p : encodeURIComponent(p)));
-  return abs ? `file:///${parts.join('/').replace(/^\/+/, '')}` : parts.join('/');
+  const outside = path.isAbsolute(rel) || /^[A-Za-z]:/.test(rel) || /^\.\.(?:[\\/]|$)/.test(rel);
+  const target = outside ? path.resolve(root, file) : rel;
+  const parts = target.split(/[\\/]/).map((p, i) => (outside && i === 0 && /^[A-Za-z]:$/.test(p) ? p : encodeURIComponent(p)));
+  return outside ? `file:///${parts.join('/').replace(/^\/+/, '')}` : parts.join('/');
+}
+
+// Newer Node versions quote the file text around a JSON syntax error
+// ('Unexpected token, "...abc"... is not valid JSON'), which can be part of a
+// secret. SARIF gets uploaded, so the quote is left out.
+function withoutQuote(error) {
+  const m = String(error ?? '');
+  if (!/ is not valid JSON$/.test(m)) return m;
+  const k = m.search(/, (?:\.\.\.)?"/);
+  return k < 0 ? m : `${m.slice(0, k)} (the file is not valid JSON)`;
+}
+
+// Config files that could not be read or parsed, as notifications on the
+// invocation, so code scanning shows that the scan was incomplete.
+function invocation(result, root) {
+  const errors = result.errors || result.configs.filter((c) => c.error).map((c) => ({ path: c.source.path, error: c.error, missing: !!c.source.missing }));
+  return {
+    executionSuccessful: errors.length === 0,
+    toolExecutionNotifications: errors.map((e) => ({
+      level: 'error',
+      message: { text: `${e.missing ? 'Path not found' : 'Could not check this config'}: ${withoutQuote(e.error)}` },
+      locations: [{ physicalLocation: { artifactLocation: { uri: uriOf(e.path, root) } } }],
+      descriptor: { id: e.missing ? 'path-not-found' : 'config-unreadable' },
+    })),
+  };
 }
 
 export function renderSarif(result, { root = process.cwd() } = {}) {
@@ -67,6 +95,6 @@ export function renderSarif(result, { root = process.cwd() } = {}) {
   return JSON.stringify({
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     version: '2.1.0',
-    runs: [{ tool: { driver: { name: 'mcpsafe', version: result.version, informationUri: 'https://github.com/r0ottrek/mcpsafe', rules } }, results }],
+    runs: [{ tool: { driver: { name: 'mcpsafe', version: result.version, informationUri: 'https://github.com/r0ottrek/mcpsafe', rules } }, invocations: [invocation(result, root)], results }],
   }, null, 2);
 }

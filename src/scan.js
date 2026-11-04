@@ -56,23 +56,60 @@ export function readToolsFile(file) {
   }
   const name = path.parse(file).name;
   let sets = [];
+  // The single-server shapes are named after the file (see uniqueToolsNames).
+  let fromFile = true;
   if (Array.isArray(doc)) {
-    const batch = doc.length > 0 && doc.every(isEnvelope);
-    sets = [{ server: name, tools: batch ? doc.flatMap((x) => toolsOf(x) || []) : doc }];
+    // Tools, saved responses (a batch), or a mix of the two.
+    sets = [{ server: name, tools: doc.flatMap((x) => (isEnvelope(x) ? toolsOf(x) || [] : [x])) }];
   } else if (isEnvelope(doc)) {
     if (doc.error) throw new UsageError(`tools file ${file} holds a JSON-RPC error response, not a tools list`);
     const tools = toolsOf(doc);
     if (tools) sets = [{ server: name, tools }];
-  } else if (isObject(doc) && Array.isArray(doc.tools)) {
-    sets = [{ server: name, tools: doc.tools }];
+  } else if (isObject(doc) && (Array.isArray(doc.tools) || (Object.keys(doc).length === 1 && toolsOf(doc)))) {
+    // { tools } or { result: { tools } }
+    sets = [{ server: name, tools: toolsOf(doc) }];
   } else if (isObject(doc)) {
+    fromFile = false;
+    // A server whose entry holds no tools list would be skipped without a
+    // word, so its tools would never be checked.
+    const bad = [];
     for (const [server, v] of Object.entries(doc)) {
       const tools = toolsOf(v);
-      if (tools) sets.push({ server, tools });
+      if (tools) sets.push({ server, tools }); else bad.push(server);
+    }
+    if (sets.length && bad.length) {
+      throw new UsageError(`tools file ${file}: no tools list for ${bad.map((b) => JSON.stringify(b)).join(', ')} (expected [tools] or {"tools": [...]} for each server)`);
     }
   }
-  sets = sets.map((s) => ({ server: s.server, tools: s.tools.filter(isTool), file })).filter((s) => s.tools.length);
+  sets = sets.map((s) => ({ server: s.server, tools: s.tools.filter(isTool), file, ...(fromFile ? { fromFile: true } : {}) })).filter((s) => s.tools.length);
   if (!sets.length) throw new UsageError(`no tools found in tools file ${file}: ${SHAPES}`);
+  return sets;
+}
+
+// Saved responses in different folders with the same file name (a/tools.json,
+// b/tools.json) would all be the server "tools" and merge into one, which hides
+// one shadowing the other. Name them after their folder too, and number any
+// that still clash.
+function uniqueToolsNames(sets) {
+  const filesOf = new Map();
+  for (const s of sets) {
+    if (!filesOf.has(s.server)) filesOf.set(s.server, new Set());
+    filesOf.get(s.server).add(path.resolve(s.file));
+  }
+  const taken = new Set(sets.filter((s) => !s.fromFile || filesOf.get(s.server).size < 2).map((s) => s.server));
+  const named = new Map();
+  for (const s of sets) {
+    if (!s.fromFile || filesOf.get(s.server).size < 2) continue;
+    const file = path.resolve(s.file);
+    if (!named.has(file)) {
+      const base = `${path.basename(path.dirname(file))}/${s.server}`;
+      let n = base;
+      for (let i = 2; taken.has(n); i++) n = `${base} (${i})`;
+      taken.add(n);
+      named.set(file, n);
+    }
+    s.server = named.get(file);
+  }
   return sets;
 }
 
@@ -97,6 +134,7 @@ export async function scan(o = {}) {
   const toolSets = [];
   const liveErrors = [];
   for (const f of o.toolsFiles || []) toolSets.push(...readToolsFile(f));
+  uniqueToolsNames(toolSets);
   if (o.connect) {
     const turnedOff = mcpjsonDisabled(configs);
     for (const s of allServers.filter((x) => !x.disabled && !turnedOff(x))) {

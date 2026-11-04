@@ -1,5 +1,11 @@
 // Rule catalog. Each rule has a stable ID, a default severity, and fix advice.
 // The logic that triggers each rule lives in checks.js.
+//
+// Some rules report findings at more than one severity. Their `range` gives
+// the lowest and highest severity a finding can have, so that --rules and the
+// README can say "low to high" instead of only the default. `severity` stays
+// the default, which SARIF rule descriptors use. A finding on a disabled
+// server is one step lower than usual; the range leaves that out.
 
 export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -7,6 +13,7 @@ export const RULES = {
   MCS001: {
     title: 'Secret stored in plain text',
     severity: 'high',
+    range: ['medium', 'critical'],
     why: 'API keys and tokens pasted into MCP config files end up in backups, dotfile repos, screen shares and support bundles. Any process running as you can read them.',
     fix: 'Move the value into your OS keychain or a shell environment variable and reference it from the config (for example "${env:GITHUB_TOKEN}" in VS Code, or an env var exported before launching the client). Rotate the exposed key.',
   },
@@ -43,6 +50,7 @@ export const RULES = {
   MCS007: {
     title: 'Server can run arbitrary shell commands',
     severity: 'high',
+    range: ['low', 'high'],
     why: 'A shell or terminal tool lets the model (or a prompt injection in any document it reads) run any command as you.',
     fix: 'Remove it if you do not need it. Otherwise keep every call behind manual approval, never auto-approve it, and run it inside a container or VM with no access to your home directory.',
   },
@@ -67,6 +75,7 @@ export const RULES = {
   MCS011: {
     title: 'Tools are auto-approved',
     severity: 'medium',
+    range: ['medium', 'high'],
     why: 'Auto-approval removes the human check between the model deciding to call a tool and the tool running. Prompt injection then goes straight to action.',
     fix: 'Remove auto-approve / alwaysAllow / trust entries, or limit them to read-only tools you have reviewed.',
   },
@@ -79,6 +88,7 @@ export const RULES = {
   MCS013: {
     title: 'Package name looks like a typosquat',
     severity: 'high',
+    range: ['medium', 'high'],
     why: 'The package name is one or two characters away from a popular MCP server. Lookalike packages are a common supply-chain attack.',
     fix: 'Check the exact package name and publisher on the registry before running it.',
   },
@@ -97,12 +107,14 @@ export const RULES = {
   MCS016: {
     title: 'Hidden instructions in tool description',
     severity: 'critical',
+    range: ['low', 'critical'],
     why: 'Tool descriptions go straight into the model\'s context. Instructions hidden there (tool poisoning) can make the agent read secrets or exfiltrate data without you seeing it.',
     fix: 'Remove the server and report it to the maintainer. Pin a version you have reviewed.',
   },
   MCS017: {
     title: 'Tool shadows or references another server\'s tools',
     severity: 'medium',
+    range: ['low', 'high'],
     why: 'Two servers exposing the same tool name, or one server\'s description giving orders about another server\'s tools, is how cross-server tool hijacking works.',
     fix: 'Remove one of the conflicting servers, or confirm both are trusted and rename/prefix tools if your client supports it.',
   },
@@ -114,6 +126,12 @@ export const RULES = {
   },
 };
 
+// The severity of a rule for display: its range ("low to high") when its
+// findings vary, else its one severity.
+export function severityLabel(rule) {
+  return rule.range ? `${rule.range[0]} to ${rule.range[1]}` : rule.severity;
+}
+
 export function ruleList() {
-  return Object.entries(RULES).map(([id, r]) => ({ id, ...r }));
+  return Object.entries(RULES).map(([id, r]) => ({ id, ...r, severityLabel: severityLabel(r) }));
 }

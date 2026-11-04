@@ -104,11 +104,23 @@ function exists(p) {
 export function findProjectConfigs(root, maxDepth = 6) {
   const found = [];
   const check = (client, p) => { if (exists(p)) found.push({ client, path: p, scope: 'project' }); };
-  // The folder passed may itself be a config folder, e.g. `mcpsafe .cursor`.
-  const rootName = path.basename(root);
+  // The folder passed may itself be a config folder, e.g. `mcpsafe .cursor`,
+  // also through a symlink with another name.
+  let configDir = root;
+  if (!CONFIG_DIRS.includes(path.basename(root))) {
+    try { configDir = fs.realpathSync(root); } catch { /* keep root */ }
+  }
+  const rootName = path.basename(configDir);
   if (CONFIG_DIRS.includes(rootName)) {
     for (const [client, rel] of PROJECT_FILES) {
-      if (rel.startsWith(`${rootName}/`)) check(client, path.join(path.dirname(root), rel));
+      if (rel.startsWith(`${rootName}/`)) check(client, path.join(path.dirname(configDir), rel));
+    }
+  } else {
+    // A config folder under another name (dotfiles/cursor, Code/User) holds
+    // its config directly. settings.json is too common a name to count.
+    for (const name of ['mcp.json', 'mcp_config.json', 'cline_mcp_settings.json', 'mcp_settings.json']) {
+      const p = path.join(root, name);
+      if (exists(p)) found.push({ client: guessClient(p), path: p, scope: 'project' });
     }
   }
   const walk = (dir, depth) => {
@@ -150,6 +162,21 @@ function realKey(p) {
   try { return fs.realpathSync(p); } catch { return path.resolve(p); }
 }
 
+// Config files that only a user's own setup has, never a project: Claude
+// Desktop's config, Claude Code's ~/.claude.json, an editor's User folder,
+// extension storage (Cline, Roo Code) and Windsurf's ~/.codeium folder.
+// .cursor/mcp.json and .gemini/settings.json are left out: projects have them too.
+function isUserShape(p) {
+  const parts = String(p).split(/[\\/]/);
+  const n = parts.length;
+  const base = parts[n - 1].toLowerCase();
+  if (base === 'claude_desktop_config.json' || base === '.claude.json') return true;
+  if (base === 'mcp_config.json' && parts[n - 2] === 'windsurf' && parts[n - 3] === '.codeium') return true;
+  if (!base.endsWith('.json')) return false;
+  for (let i = 1; i < n - 1; i++) if (parts[i] === 'User' && EXTENSION_HOSTS.includes(parts[i - 1])) return true;
+  return false;
+}
+
 function isInside(dir, file) {
   const rel = path.relative(dir, file);
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
@@ -187,7 +214,10 @@ export function discover({ paths = [], home = os.homedir(), includeHome = true, 
   const userIndex = () => (index ??= userConfigIndex([...new Set([home || os.homedir(), os.homedir()])]));
   const asUser = (c) => {
     const u = userIndex().get(realKey(c.path));
-    return u ? { client: u.client, path: c.path, scope: 'user' } : c;
+    if (u) return { client: u.client, path: c.path, scope: 'user' };
+    // A file that can only be a user-level config, wherever it sits (another
+    // user's home, a backup copy), is not a project file either.
+    return isUserShape(c.path) ? { ...c, scope: 'user' } : c;
   };
   for (const p of paths) {
     const abs = path.resolve(p);
@@ -197,6 +227,11 @@ export function discover({ paths = [], home = os.homedir(), includeHome = true, 
       if (depth > 0) {
         const dir = realKey(abs);
         for (const [k, c] of userIndex()) if (isInside(dir, k)) out.push(c);
+        // The folder may be another home folder. If it holds a config that
+        // only a home has (~/.claude.json, Claude Desktop, Cline, Roo Code),
+        // all its user-level configs keep user scope, ~/.cursor/mcp.json too.
+        const own = userConfigCandidates(abs).filter((c) => exists(c.path));
+        if (own.some((c) => isUserShape(c.path))) out.push(...own);
       }
       out.push(...findProjectConfigs(abs, depth).map(asUser));
     } else {
