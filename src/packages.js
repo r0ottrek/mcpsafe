@@ -11,17 +11,51 @@ export function baseCommand(cmd) {
   return path.basename(cmd.replace(/\\/g, '/')).toLowerCase().replace(/\.(cmd|exe|bat|ps1)$/, '');
 }
 
+// Split a command line the way a POSIX shell would: whitespace separates
+// words, and single and double quotes group them. Outside quotes a backslash
+// only escapes whitespace or a quote, so Windows paths keep their backslashes.
+export function splitCommandLine(line) {
+  const out = [];
+  const str = String(line ?? '');
+  let cur = '';
+  let word = false;
+  let quote = null;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (quote === "'") { if (c === "'") quote = null; else cur += c; continue; }
+    if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === '\\' && /["\\$`]/.test(str[i + 1] || '')) cur += str[++i];
+      else cur += c;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; word = true; continue; }
+    if (c === '\\' && /[\s"']/.test(str[i + 1] || '')) { cur += str[++i]; word = true; continue; }
+    if (/\s/.test(c)) { if (word) out.push(cur); cur = ''; word = false; continue; }
+    cur += c;
+    word = true;
+  }
+  if (word) out.push(cur);
+  return out;
+}
+
+// Programs that commonly start a whole command line written into `command`.
+const LAUNCHERS = new Set(['npx', 'bunx', 'npm', 'pnpm', 'yarn', 'bun', 'uvx', 'uv', 'pipx', 'docker', 'podman', 'node', 'nodejs',
+  'python', 'python3', 'py', 'deno', 'tsx', 'ts-node', 'cmd', 'wsl', 'env', 'sh', 'bash', 'zsh', 'pwsh', 'powershell', 'java']);
+
 // Unwrap `cmd /c npx ...` and `wsl npx ...` style launchers.
 export function effectiveCommand(server) {
   let cmd = server.command || '';
   let args = [...server.args];
-  // `command` may contain the whole line (some clients allow it).
-  // Some clients accept the whole command line in `command`. Split it unless it
-  // looks like a path that happens to contain spaces.
-  if (cmd.includes(' ') && args.length === 0 && !/[\\/]/.test(cmd)) {
-    const parts = cmd.split(/\s+/);
-    cmd = parts.shift();
-    args = parts;
+  // Some clients accept the whole command line in `command`. Split it like a
+  // shell would, unless it looks like a path that happens to contain spaces:
+  // a slash somewhere and a first word that is not a known launcher.
+  if (args.length === 0 && /\s/.test(cmd.trim())) {
+    const parts = splitCommandLine(cmd.trim());
+    if (parts.length > 1 && (!/[\\/]/.test(cmd) || LAUNCHERS.has(baseCommand(parts[0])))) {
+      cmd = parts[0];
+      args = parts.slice(1);
+    }
   }
   for (let guard = 0; guard < 3; guard++) {
     const b = baseCommand(cmd);
@@ -73,7 +107,28 @@ function pySpec(spec) {
   return r;
 }
 
-const DOCKER_VALUE_FLAGS = new Set(['-e', '--env', '-v', '--volume', '--name', '--network', '--net', '-p', '--publish', '--mount', '--env-file', '-w', '--workdir', '--entrypoint', '--user', '-u', '--cap-add', '--cap-drop', '--pid', '--platform', '--label', '-l', '--add-host', '--device', '--memory', '-m', '--cpus', '--hostname', '-h', '--security-opt', '--ipc', '--userns', '--tmpfs', '--ulimit', '--restart', '--pull', '--gpus', '--uts']);
+// `docker run` / `podman run` options that take the next argument as their
+// value. Anything not listed is read as a boolean flag, so a missing entry
+// makes the parser take the flag's value for the image and stop early.
+const DOCKER_VALUE_FLAGS = new Set([
+  '-a', '--attach', '-c', '--cpu-shares', '-e', '--env', '-h', '--hostname', '-l', '--label', '-m', '--memory', '-p', '--publish',
+  '-u', '--user', '-v', '--volume', '-w', '--workdir',
+  '--add-host', '--annotation', '--blkio-weight', '--blkio-weight-device', '--cap-add', '--cap-drop', '--cgroup-parent', '--cgroupns',
+  '--cidfile', '--cpu-count', '--cpu-percent', '--cpu-period', '--cpu-quota', '--cpu-rt-period', '--cpu-rt-runtime', '--cpus',
+  '--cpuset-cpus', '--cpuset-mems', '--detach-keys', '--device', '--device-cgroup-rule', '--device-read-bps', '--device-read-iops',
+  '--device-write-bps', '--device-write-iops', '--dns', '--dns-opt', '--dns-option', '--dns-search', '--domainname', '--entrypoint',
+  '--env-file', '--expose', '--gpus', '--group-add', '--health-cmd', '--health-interval', '--health-retries', '--health-start-interval',
+  '--health-start-period', '--health-timeout', '--io-maxbandwidth', '--io-maxiops', '--ip', '--ip6', '--ipc', '--isolation',
+  '--kernel-memory', '--label-file', '--link', '--link-local-ip', '--log-driver', '--log-opt', '--mac-address', '--memory-reservation',
+  '--memory-swap', '--memory-swappiness', '--mount', '--name', '--net', '--net-alias', '--network', '--network-alias', '--oom-score-adj',
+  '--pid', '--pids-limit', '--platform', '--pull', '--restart', '--runtime', '--security-opt', '--shm-size', '--stop-signal',
+  '--stop-timeout', '--storage-opt', '--sysctl', '--tmpfs', '--ulimit', '--userns', '--uts', '--volume-driver', '--volumes-from',
+  // podman only
+  '--arch', '--cgroup-conf', '--cgroups', '--chrootdirs', '--conmon-pidfile', '--decryption-key', '--gidmap', '--group-entry',
+  '--hooks-dir', '--init-path', '--os', '--passwd-entry', '--personality', '--pidfile', '--pod', '--pod-id-file', '--preserve-fds',
+  '--rdt-class', '--requires', '--retry', '--retry-delay', '--sdnotify', '--seccomp-policy', '--secret', '--subgidname',
+  '--subuidname', '--timeout', '--tz', '--uidmap', '--umask', '--unsetenv', '--variant',
+]);
 
 export function parseDockerRun(args) {
   const i0 = args.findIndex((a) => a === 'run');
