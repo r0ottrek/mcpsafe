@@ -821,7 +821,7 @@ export function checkTools(toolSets, serverByName = {}) {
   for (const set of toolSets) for (const t of set.tools) if (t?.name && !serverOf.has(t.name)) serverOf.set(t.name, set.server);
 
   for (const set of toolSets) {
-    const srv = serverByName[set.server] || { name: set.server, client: null, file: set.file || null, jsonPath: null };
+    const srv = set.srv || serverByName[set.server] || { name: set.server, client: null, file: set.file || null, jsonPath: null };
     const ctx = { server: srv };
     const own = new Set(set.tools.map((x) => x?.name));
     for (const t of set.tools) {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { discover } from './discover.js';
 import { loadConfig } from './parse.js';
 import { runChecks, checkTools } from './checks.js';
-import { listTools } from './live.js';
+import { listTools, mcpjsonDisabled } from './live.js';
 import { score, sortFindings } from './score.js';
 import { SEVERITIES } from './rules.js';
 import { parseJsonc } from './jsonc.js';
@@ -98,12 +98,16 @@ export async function scan(o = {}) {
   const liveErrors = [];
   for (const f of o.toolsFiles || []) toolSets.push(...readToolsFile(f));
   if (o.connect) {
-    for (const s of allServers.filter((x) => !x.disabled)) {
+    const turnedOff = mcpjsonDisabled(configs);
+    for (const s of allServers.filter((x) => !x.disabled && !turnedOff(x))) {
       o.onProgress?.(`Listing tools from "${s.name}"…`);
       try {
-        toolSets.push({ server: s.name, tools: await listTools(s), file: s.file });
+        const tools = await listTools(s);
+        // srv ties the tools to this exact server, not just to its name.
+        toolSets.push({ server: s.name, srv: s, tools, file: s.file });
+        if (tools.warning) liveErrors.push({ server: s.name, file: s.file, client: s.client, error: tools.warning });
       } catch (e) {
-        liveErrors.push({ server: s.name, error: e.message });
+        liveErrors.push({ server: s.name, file: s.file, client: s.client, error: e.message });
       }
     }
   }
