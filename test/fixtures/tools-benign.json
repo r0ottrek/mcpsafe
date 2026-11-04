@@ -2285,5 +2285,247 @@
         ]
       }
     }
+  ],
+  "http-client": [
+    {
+      "name": "http_request",
+      "description": "Send an HTTP request to a URL such as https://api.github.com/user and return the response. Use the headers parameter to pass an API key or bearer token when the endpoint requires authentication.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "URL"
+          },
+          "method": {
+            "type": "string",
+            "description": "GET, POST, ..."
+          },
+          "headers": {
+            "type": "object"
+          },
+          "body": {
+            "type": "string",
+            "description": "Request body"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "webhook_post",
+      "description": "Send a POST request to a webhook URL (for example https://hooks.slack.com/services/T000/B000/XXXX). Authentication uses the API key configured on the server.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Webhook URL"
+          },
+          "payload": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "discord_notify",
+      "description": "Post the summary to the configured Discord webhook (https://discord.com/api/webhooks/...). The webhook URL is read from environment variables.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Message text"
+          }
+        },
+        "required": [
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "ntfy_publish",
+      "description": "Send a test notification to https://ntfy.sh/<topic>. Set NTFY_PASSWORD in environment variables if the topic is protected.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "message"
+        ]
+      }
+    }
+  ],
+  "messaging": [
+    {
+      "name": "send_mail",
+      "description": "Send an email via the configured SMTP server to recipient@example.com. The SMTP password is read from environment variables.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Recipient address"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "send_sms",
+      "description": "Send an SMS via Twilio to +14155552671. Your Twilio auth token and API key must be set as environment variables.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Phone number in E.164 format"
+          },
+          "body": {
+            "type": "string",
+            "description": "Message text"
+          }
+        },
+        "required": [
+          "to",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "notify_channel",
+      "description": "Post a message to a team channel. To reply in a thread, pass the thread_ts of the parent message. Do not mention users with @channel unless the user explicitly asks. Do not notify users by default; set notify=true to email them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "thread_ts": {
+            "type": "string"
+          },
+          "notify": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channel",
+          "text"
+        ]
+      }
+    }
+  ],
+  "secret-vault": [
+    {
+      "name": "get_secret_names",
+      "description": "List the names of secrets in the vault. Do not reveal secret values to users; only names are returned.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Vault path, e.g. secret/data/myapp"
+          }
+        }
+      }
+    },
+    {
+      "name": "rotate_api_key",
+      "description": "Rotate an API key and store the new one in the vault. Do not reveal API keys to users. Never tell the user their password; use reset_password to send a reset link.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "keyId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "keyId"
+        ]
+      }
+    }
+  ],
+  "editor": [
+    {
+      "name": "replace_in_file",
+      "description": "Replace text in a file. Before using this tool, read the file to get the exact text to replace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "oldText": {
+            "type": "string",
+            "description": "Exact text to replace"
+          },
+          "newText": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "oldText",
+          "newText"
+        ]
+      }
+    },
+    {
+      "name": "insert_lines",
+      "description": "Insert lines at a line number. Before calling this tool, open the file you want to edit so the line numbers are correct.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "line",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "project_overview",
+      "description": "Summarise the project layout. Before using this tool, read the README file to understand the project structure.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
   ]
 }
