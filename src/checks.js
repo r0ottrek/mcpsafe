@@ -337,7 +337,7 @@ export function checkTools(toolSets, serverByName = {}) {
   for (const set of toolSets) for (const t of set.tools) allNames.add(t.name);
 
   for (const set of toolSets) {
-    const srv = serverByName[set.server] || { name: set.server, client: null, file: set.file || null, jsonPath: null };
+    const srv = set.srv || serverByName[set.server] || { name: set.server, client: null, file: set.file || null, jsonPath: null };
     const ctx = { server: srv };
     for (const t of set.tools) {
       // Collect description text from the tool and every parameter description.

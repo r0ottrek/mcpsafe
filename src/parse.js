@@ -4,9 +4,15 @@ import { parseJsonc } from './jsonc.js';
 
 function normServer(name, def, source, jsonPath) {
   if (!def || typeof def !== 'object') return null;
-  const url = def.url || def.serverUrl || def.httpUrl || def.endpoint || null;
+  const url = def.httpUrl || def.url || def.serverUrl || def.endpoint || null;
+  const type = def.type || def.transport || def.transportType;
   let transport = 'stdio';
-  if (url) transport = def.type === 'sse' || def.transport === 'sse' ? 'sse' : 'http';
+  if (def.httpUrl) transport = 'http';
+  else if (url && type === 'sse') transport = 'sse';
+  // Gemini CLI: `url` is an SSE endpoint and `httpUrl` is Streamable HTTP,
+  // unless an explicit type says otherwise.
+  else if (url && source.client === 'Gemini CLI' && def.url && !/^(?:http|streamable-?http)$/i.test(String(type || ''))) transport = 'sse';
+  else if (url) transport = 'http';
   const args = Array.isArray(def.args) ? def.args.map(String) : [];
   return {
     name,

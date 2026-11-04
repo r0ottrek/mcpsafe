@@ -42,7 +42,7 @@ The examples use the short name. Install it once with `npm install -g github:r0o
 
 A server's tool descriptions go to the model verbatim, and you normally never read them. A malicious or compromised server can use them to tell the model to read `~/.ssh/id_rsa` and pass it along as a harmless-looking parameter.
 
-With `--connect`, mcpsafe starts each configured server, lists its tools over MCP (stdio or Streamable HTTP) and checks every tool and parameter description. Because that runs the servers, use it only where that is acceptable. To check a saved `tools/list` response instead, pass it with `--tools file.json`.
+With `--connect`, mcpsafe starts each configured server, lists its tools over MCP (stdio, Streamable HTTP or the older SSE transport) and checks every tool and parameter description. It starts servers the way their client does: project servers in the project folder, `${VAR}`, `${env:VAR}` and `${VAR:-default}` filled in from your environment, and servers you turned off skipped. Because that runs the servers, use it only where that is acceptable. To check a saved `tools/list` response instead, pass it with `--tools file.json`.
 
 <img src="docs/finding.png" width="760" alt="A critical finding in the HTML report: the get_forecast tool description with its hidden instruction to read ~/.ssh/id_rsa highlighted">
 
