@@ -481,7 +481,9 @@ function checkFileUnicode(ctx) {
   if (!hits.length) return [];
   const line = body.slice(0, hits[0].index).split('\n').length;
   const codes = [...new Set(hits.map((h) => `U+${h[0].codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`))];
-  return [finding('MCS015', ctx, `${hits.length} invisible character(s) found, first on line ${line}.`, { evidence: codes.join(', ') })];
+  const f = finding('MCS015', ctx, `${hits.length} invisible character(s) found, first on line ${line}.`, { evidence: codes.join(', ') });
+  f.line = line; // there is no JSON path to look the line up from
+  return [f];
 }
 
 function checkFilePermissions(ctx, serverFindings) {
