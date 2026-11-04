@@ -142,7 +142,7 @@ function shortPath(p, max = 52) {
 // result.errors; older callers only have the error on each config.
 const scanErrors = (result) => result.errors ?? result.configs.filter((x) => x.error).map((x) => ({ path: x.source.path, error: x.error }));
 
-export function renderTerminal(result, { color = false, verbose = false, width = 100 } = {}) {
+export function renderTerminal(result, { color = false, verbose = false, html = false, width = 100 } = {}) {
   const c = makeColors(color);
   const W = Math.min(Math.max(width, 40), 96);
   const { score, findings, configs, servers, toolsScanned, liveErrors } = result;
@@ -338,7 +338,7 @@ export function renderTerminal(result, { color = false, verbose = false, width =
   }
   const tips = [];
   if (findings.length && !verbose) tips.push('-v  show each finding in its config file, with the fix');
-  tips.push('--html  write a report you can open in a browser');
+  if (!html) tips.push('--html  write a report you can open in a browser');
   if (!result.live && !toolsScanned && servers > 0) tips.push('--connect  also check tool descriptions (starts your servers)');
   for (const t of tips) {
     const [flag, ...rest] = t.split('  ');

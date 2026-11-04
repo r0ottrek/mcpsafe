@@ -10,6 +10,10 @@ import { launchedPackages, effectiveCommand } from '../packages.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+// The text a reader sees in a fragment of this report's own markup (escaped
+// text and closed tags only), for the search box. Line numbers are left out.
+export const visibleText = (html) => html.replace(/<span class="no">\d+<\/span>/g, ' ').replace(/<[^<>]*>/g, ' ')
+  .replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e])).replace(/\s+/g, ' ');
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 const NUMBER_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 const words = (n) => NUMBER_WORDS[n] ?? String(n);
@@ -156,7 +160,7 @@ export function renderHtml(result) {
       f.file ? ['File', `<code>${esc(displayPath(f.file))}${f.line ? `:${f.line}` : ''}</code>`] : null,
       f.jsonPath && !f.jsonPath.startsWith('tools.') ? ['Key', `<code>${esc(f.jsonPath)}</code>`] : null,
     ].filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-    const search = [f.id, f.title, f.server, f.client, f.message, displayPath(f.file)].join(' ').toLowerCase();
+    const search = [f.id, f.title, f.server, f.client, f.message, displayPath(f.file), visibleText(excerpt)].join(' ').toLowerCase();
     return `
       <article class="finding" id="f${i + 1}" data-sev="${f.severity}" data-key="${esc(filterKey(f))}" data-search="${esc(search)}">
         <p class="kicker"><span class="sev s-${f.severity}">${cap(f.severity)}</span> <span class="rid">${esc(f.id)}</span></p>
