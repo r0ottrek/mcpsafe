@@ -101,6 +101,8 @@ With `--connect`, mcpsafe starts each configured server, lists its tools over MC
 | MCS017 | medium | Two servers exposing the same tool name, or one server giving orders about another's tools |
 | MCS018 | medium | Packages installed from a git branch or URL instead of a pinned release |
 
+MCS001 does not report values that only point at a secret (`${VAR}` references, environment variable names, file paths, AWS ARNs and other secret manager names), template placeholders copied from a README (`xoxb-your-bot-token`, `{{GITHUB_TOKEN}}`), or a database URL on localhost with a well-known default password such as `postgres:postgres@127.0.0.1`.
+
 The reasoning and the fix for each rule are in [src/rules.js](src/rules.js). `mcpsafe --rules` lists them.
 
 ## Where it looks

@@ -1,5 +1,25 @@
 // Detects credentials pasted directly into config values.
 
+// Loopback hosts and the default passwords that local database containers and
+// tools ship with (the Supabase CLI uses postgres:postgres@127.0.0.1:54322).
+// A URL with one of these on a loopback host is a local dev default that grants
+// nothing beyond the machine, so it is not reported. The same password on any
+// other host, or any other password on loopback, still is.
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1|0\.0\.0\.0|host\.docker\.internal)$/i;
+const DEV_DB_PASSWORDS = new Set([
+  'postgres', 'password', 'pass', 'root', 'example', 'secret', 'admin', 'dev', 'test', 'mysql', 'mariadb',
+  'redis', 'redispw', 'mongo', 'mongodb', 'guest', 'clickhouse',
+]);
+
+function isLocalDevDb(m) {
+  // locate.js calls `valid` from String.replace, where the match has no index.
+  if (typeof m.index !== 'number' || typeof m.input !== 'string') return false;
+  if (!DEV_DB_PASSWORDS.has(m[1].toLowerCase())) return false;
+  const rest = m.input.slice(m.index + m[0].length, m.index + m[0].length + 256);
+  const host = rest.startsWith('[') ? rest.slice(0, rest.indexOf(']') + 1) : rest.split(/[:/?#,\s]/)[0];
+  return LOOPBACK.test(host);
+}
+
 // `group` names the capture group that holds the secret itself (default: the
 // whole match). `valid` rejects matches that only look like the pattern.
 const DB_URL = /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver|clickhouse)(?:\+\w{1,32})?:\/\/[^:\s/@]{0,256}:([^@\s?#]{3,256})@/; // bounded, so it runs in linear time
@@ -22,18 +42,19 @@ export const SECRET_PATTERNS = [
   { name: 'Linear API key', re: /\blin_api_[A-Za-z0-9]{30,}\b/ },
   { name: 'Private key', re: /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/ },
   // A password may contain '/', but "host:5432/db" before a later '@' is a port and a path.
-  { name: 'Database URL with password', re: DB_URL, group: 1, valid: (m) => !/^\d+(?:\/|$)/.test(m[1]) && !isPlaceholder(m[1]) },
+  { name: 'Database URL with password', re: DB_URL, group: 1, valid: (m) => !/^\d+(?:\/|$)/.test(m[1]) && !isPlaceholder(m[1]) && !isLocalDevDb(m) },
 ];
 
 const SECRET_KEY_NAME = /(api[_-]?key|apikey|token(?!iz)|secret|passw(or)?d|passwd|pwd|passphrase|credential|private[_-]?key|access[_-]?key|bearer)/i;
 // Whole words only, so OAUTH, AUTHOR and AUTH0 do not count.
 const SECRET_KEY_WORDS = new Set(['auth', 'authorization', 'pat']);
 // Key names whose last word says the value is a setting, not the secret itself
-// (TOKEN_URL, AUTH_PROVIDER, SECRET_ID, GOOGLE_APPLICATION_CREDENTIALS_PATH, ...).
+// (TOKEN_URL, AUTH_PROVIDER, SECRET_ID, SECRET_ARN, TOKEN_ENV_VAR, ...).
 const NON_SECRET_KEY_END = new Set([
   'path', 'file', 'filename', 'dir', 'directory', 'folder', 'url', 'uri', 'endpoint', 'domain', 'host', 'hostname', 'port',
   'scope', 'scopes', 'provider', 'method', 'mode', 'type', 'email', 'name', 'id', 'user', 'username', 'region', 'issuer',
   'audience', 'enabled', 'limit', 'ttl', 'expiry', 'version', 'format', 'size', 'count',
+  'arn', 'ref', 'reference', 'resource', 'env', 'var', 'variable', 'source', 'server', 'permissions', 'roles', 'template',
 ]);
 
 function keyWords(key) {
@@ -47,40 +68,179 @@ export function keyLooksSecret(key) {
   return SECRET_KEY_NAME.test(key) || words.some((w) => SECRET_KEY_WORDS.has(w));
 }
 
+// Top-level domains a configured host name plausibly ends in (any two-letter
+// country code counts too). "prod.k9x2m7q4z8w1.abc" is a dotted token, not a host.
+const TLDS = new Set([
+  'com', 'net', 'org', 'io', 'dev', 'app', 'ai', 'co', 'cloud', 'info', 'biz', 'edu', 'gov', 'mil', 'int', 'xyz', 'tech',
+  'site', 'online', 'run', 'page', 'host', 'services', 'systems', 'internal', 'local', 'localhost', 'lan', 'corp', 'home',
+  'test', 'example', 'invalid', 'svc', 'cluster', 'aws', 'azure', 'google', 'microsoft',
+]);
+
+const CAMEL = /^[A-Z]?[a-z]+(?:[A-Z][a-z]+)*\d{0,2}$/;
+
+// One word of an identifier, scope or path: "read", "Mail", "ReadWrite",
+// "oauth2", "GCP", "Reader2", "2024". Random keys mix case and digits, so a
+// camelCase word allows digits only at its end, needs a vowel in every part and
+// parts of three letters or more on average ("yzuEpihKowqaCxgb" is not one).
+function wordyToken(t) {
+  if (/^[a-z]+\d{0,2}$/.test(t) || /^[A-Z]{1,6}\d{0,2}$/.test(t) || /^\d{1,4}$/.test(t)) return true;
+  if (!CAMEL.test(t)) return false;
+  const parts = t.replace(/\d+$/, '').split(/(?=[A-Z])/);
+  return parts.every((p) => /[aeiouy]/i.test(p)) && parts.length * 3 <= t.length;
+}
+
 // Values that are clearly not credentials, whatever their key is called.
 export function looksLikeSetting(v, key) {
+  const passKey = /pass|pwd/i.test(key);
   if (/^[a-z][\w+.-]*:\/\//i.test(v)) return true; // any URL; DB URLs are covered by the pattern above
   if (/^[./~]/.test(v) || /^[A-Za-z]:[\\/]/.test(v) || v.startsWith('\\\\')) return true; // paths
   if (/[\\/]/.test(v) && /\.[A-Za-z0-9]{1,5}$/.test(v.split(/[\\/]/).pop())) return true; // relative path to a file
   if (/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v)) return true; // email address
-  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?(?:\/\S*)?$/.test(v)) return true; // host name
-  // Lowercase words joined by - _ . : , or / (scopes, provider names, AWS secret ids).
-  // A passphrase looks the same, so keep these for password keys.
-  if (!/pass|pwd/i.test(key) && /^[a-z]+\d*(?:[-_.:,/][a-z]+\d*)+$/.test(v)) return true;
+  // References to a secret held elsewhere: AWS ARNs, GCP Secret Manager names,
+  // Azure Key Vault references. They name the secret; they are not the secret.
+  if (/^arn:aws[\w-]*:/i.test(v) || /^projects\/[^/]+\/secrets\//.test(v) || /^@Microsoft\.KeyVault\(/i.test(v)) return true;
+  // An environment variable name (--token-env-var GITHUB_PERSONAL_ACCESS_TOKEN).
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v)) return true;
+  // Host name, in any case (Login.MicrosoftOnline.com), with a real-looking TLD.
+  const host = v.match(/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.([A-Za-z]{2,24})(?::\d{1,5})?(?:\/[^\s]*)?$/);
+  if (host && (host[1].length === 2 || TLDS.has(host[1].toLowerCase()))) return true;
+  // A passphrase looks like the rules below, so keep them away from password keys.
+  if (passKey) return false;
+  // Relative paths: Windows style (keys\id_ed25519) or under a usual folder name.
+  if (/^[\w .-]+(?:\\[\w .-]+)+\\?$/.test(v)) return true;
+  if (/^(?:secrets?|keys?|credentials?|creds|certs?|config|conf|\.?ssh|private|home|users?|etc|var|opt|data|tmp)[\\/]/i.test(v)) return true;
+  // Identifiers, enum values, scope lists and secret ids made of ordinary words:
+  // "azure-active-directory", "read:user,repo,gist", "Mail.Read,Files.ReadWrite",
+  // "EnvironmentCredential", "prod/mcp/database-credentials".
+  if (/^[A-Za-z0-9._:,/\\-]+$/.test(v)) {
+    const tokens = v.split(/[._:,/\\-]+/).filter(Boolean);
+    if (tokens.every(wordyToken) && (tokens.length >= 2 || /[a-z][A-Z]/.test(v))) return true;
+  }
   return false;
 }
 
-const REF = /\$\{[^}]*\}/g;
-const REF_DEFAULT = /\$\{[A-Za-z_]\w*:?-([^}]*)\}/g; // ${VAR:-default} and ${VAR-default}
+// ---- ${...} references ----
+
+// Shell and Claude Code operators whose right-hand side is literal text that is
+// committed with the config: ${VAR:-default}, ${VAR-default}, ${VAR:=x},
+// ${VAR=x}, ${VAR:?message}, ${VAR?message}, ${VAR:+alt}, ${VAR+alt}.
+const OP_CHARS = '-=?+';
+const isNameChar = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_';
+
+/**
+ * Expands ${...} references in one left-to-right pass (linear in the length,
+ * whatever the nesting). A reference with a default operator becomes its
+ * default text; any other reference (${VAR}, ${env:X}, ${input:id}) becomes
+ * nothing; an unclosed "${" stays as literal text.
+ * @returns {{text: string, defaults: string[]}} the expanded text and every
+ *   default value found, inner ones included
+ */
+function parseRefs(str) {
+  const s = String(str);
+  const stack = []; // open references: {lit, phase: 'name'|'value'|'other', name, op, val}
+  const defaults = [];
+  let out = '';
+  const emit = (text, literal = text) => {
+    const f = stack[stack.length - 1];
+    if (!f) { out += text; return; }
+    f.lit += literal;
+    if (f.phase === 'value') f.val += text;
+    else if (f.phase === 'name') f.phase = 'other';
+  };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '$' && s[i + 1] === '{') {
+      stack.push({ lit: '${', phase: 'name', name: '', op: '', val: '' });
+      i += 2;
+      continue;
+    }
+    const f = stack[stack.length - 1];
+    if (!f) {
+      // Copy plain text up to the next "${" in one step.
+      const next = s.indexOf('${', i);
+      const end = next === -1 ? s.length : next;
+      out += s.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (c === '}') {
+      stack.pop();
+      const value = f.op ? f.val : '';
+      if (f.op && value) defaults.push(value);
+      emit(value, value);
+      i++;
+      continue;
+    }
+    if (f.phase === 'name') {
+      if (isNameChar(c)) { f.name += c; f.lit += c; i++; continue; }
+      if (f.name && c === ':' && OP_CHARS.includes(s[i + 1] || '\0')) { f.op = c + s[i + 1]; f.lit += f.op; f.phase = 'value'; i += 2; continue; }
+      if (f.name && OP_CHARS.includes(c)) { f.op = c; f.lit += c; f.phase = 'value'; i++; continue; }
+      f.phase = 'other';
+    }
+    // Inside a reference: copy up to the next special character in one step.
+    let j = i + 1;
+    while (j < s.length && s[j] !== '}' && !(s[j] === '$' && s[j + 1] === '{')) j++;
+    const chunk = s.slice(i, j);
+    f.lit += chunk;
+    if (f.phase === 'value') f.val += chunk;
+    i = j;
+  }
+  // References that never closed are literal text.
+  while (stack.length) {
+    const f = stack.pop();
+    const parent = stack[stack.length - 1];
+    if (!parent) out += f.lit;
+    else { parent.lit += f.lit; if (parent.phase === 'value') parent.val += f.lit; }
+  }
+  return { text: out, defaults: [...new Set(defaults)] };
+}
 
 // Replace variable references by their default value (or nothing), so that a
 // literal committed next to a reference is still checked.
 export function expandRefs(s) {
-  return String(s).replace(REF_DEFAULT, '$1').replace(REF, '');
+  return parseRefs(s).text;
 }
 
-export function isPlaceholder(v) {
-  let s = String(v).trim();
+// ---- Placeholders ----
+
+// Words that mark a template value copied from a README: "xoxb-your-bot-token",
+// "fc-YOUR_API_KEY", "ghp_YourTokenGoesHere", "sk-proj-REPLACE_ME".
+const PLACEHOLDER_WORDS = new Set([
+  'your', 'yours', 'here', 'replace', 'example', 'changeme', 'changeit', 'dummy', 'placeholder', 'redacted', 'insert',
+  'fixme', 'sample',
+]);
+
+// Whole words only (split at separators, case changes and digits), so a random
+// token that happens to contain "here" or "xxxx" inside a longer run still counts.
+function hasPlaceholderWord(s) {
+  if (s.includes('...') || s.includes('…')) return true; // "sk-ant-api03-..."
+  for (const w of s.split(/[^A-Za-z0-9]+|(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])/)) {
+    const l = w.toLowerCase();
+    if (PLACEHOLDER_WORDS.has(l) || (l.length >= 4 && /^x+$/.test(l))) return true;
+  }
+  return false;
+}
+
+// `s` has its ${...} references expanded already.
+function placeholderText(s) {
+  s = s.trim();
   if (!s) return true;
-  // ${VAR}, ${env:VAR}, ${input:id}: a placeholder only if nothing literal is left
-  if (/\$\{[^}]*\}/.test(s)) { s = expandRefs(s).trim(); if (!s) return true; }
   if (/^\$[A-Za-z_]\w*$/.test(s)) return true; // $VAR
   if (/^%[A-Za-z_]\w*%$/.test(s)) return true; // %VAR%
-  if (/^<.*>$/.test(s)) return true;
+  if (/^(?:\$env:|env:)[A-Za-z_]\w*$/i.test(s)) return true; // PowerShell $env:VAR, env:VAR
+  if (/^<.*>$/.test(s) || /<[A-Za-z_][\w .-]*>/.test(s)) return true; // <your-token>, xoxb-<token>
+  if (/\{\{[^{}]*\}\}/.test(s)) return true; // {{GITHUB_TOKEN}}
   if (/^(your|my|insert|replace|enter|put|add)[\s_-]/i.test(s)) return true;
   if (/(placeholder|changeme|example|dummy|redacted|xxxx|\*\*\*\*|here$)/i.test(s)) return true;
   if (/^(true|false|null|none|\d+)$/i.test(s)) return true;
-  return false;
+  return hasPlaceholderWord(s);
+}
+
+export function isPlaceholder(v) {
+  const s = String(v);
+  // ${VAR}, ${env:VAR}, ${input:id}: a placeholder only if nothing literal is left
+  return placeholderText(s.includes('${') ? expandRefs(s) : s);
 }
 
 export function entropy(s) {
@@ -113,29 +273,33 @@ function globalRe(re) {
 export function findSecrets(value, keyName = '') {
   if (value == null) return [];
   const raw = String(value);
-  const hasRef = /\$\{[^}]*\}/.test(raw);
-  const s = hasRef ? expandRefs(raw) : raw;
-  if (isPlaceholder(s)) return [];
+  const refs = raw.includes('${') ? parseRefs(raw) : null;
+  const s = refs ? refs.text : raw;
+  // A single-word value is judged as a whole. A value with spaces (a command
+  // line, a header) can hold a real token next to template text, so each
+  // match is judged on its own instead.
+  if (placeholderText(s) && (!s.trim() || !/\s/.test(s.trim()))) return [];
   const out = [];
   for (const p of SECRET_PATTERNS) {
     for (const m of s.matchAll(globalRe(p.re))) {
       if (p.valid && !p.valid(m)) continue;
       // A private key is the whole value, not just its header line.
       const secret = p.name === 'Private key' ? s : m[p.group || 0];
+      if (placeholderText(p.name === 'Private key' ? s : m[0])) continue;
       out.push({ type: p.name, confidence: 'high', match: m[0], secret });
     }
   }
   if (out.length) return out;
   // Authorization: Bearer <literal>
   const bearer = s.trim().match(/^(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{16,})$/i);
-  if (bearer && !isPlaceholder(bearer[1])) return [{ type: 'Authorization header credential', confidence: 'high', match: bearer[1], secret: bearer[1] }];
+  if (bearer && !placeholderText(bearer[1])) return [{ type: 'Authorization header credential', confidence: 'high', match: bearer[1], secret: bearer[1] }];
   // Generic: secret-looking key name with a random-looking value. When the value
   // mixes in ${...} references, only a literal default value is judged, so that
   // "${HOME}/.config/x" or "https://${HOST}/api" are not.
   if (!keyLooksSecret(keyName)) return out;
-  const candidates = hasRef ? [...raw.matchAll(REF_DEFAULT)].map((m) => m[1]) : [s];
+  const candidates = refs ? refs.defaults : [s];
   for (const c of candidates) {
-    if (c.length >= 12 && !/\s/.test(c) && !isPlaceholder(c) && !looksLikeSetting(c, keyName) && entropy(c) >= 3.2) {
+    if (c.length >= 12 && !/\s/.test(c) && !placeholderText(c) && !looksLikeSetting(c, keyName) && entropy(c) >= 3.2) {
       out.push({ type: `Credential in ${keyName}`, confidence: 'medium', match: c, secret: c });
     }
   }
