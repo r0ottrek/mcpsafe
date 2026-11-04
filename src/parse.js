@@ -1,12 +1,26 @@
 // Reads a config file and normalizes every MCP server definition in it.
 import fs from 'node:fs';
-import { parseJsonc } from './jsonc.js';
+import { parseJsonc, stripJsonc } from './jsonc.js';
+
+const HTTP_TYPES = new Set(['http', 'streamable-http', 'streamablehttp', 'streamable_http']);
+
+// Transport of a remote server. An explicit type wins. Gemini CLI uses `url`
+// for SSE and `httpUrl` for Streamable HTTP (and prefers httpUrl when both
+// are set); other clients use `url` for Streamable HTTP.
+function remoteTransport(def, source) {
+  const type = [def.type, def.transport, def.transportType].find((t) => typeof t === 'string')?.toLowerCase();
+  if (type === 'sse') return 'sse';
+  if (HTTP_TYPES.has(type)) return 'http';
+  if (source.client === 'Gemini CLI' && def.url && !def.httpUrl) return 'sse';
+  return 'http';
+}
 
 function normServer(name, def, source, jsonPath) {
   if (!def || typeof def !== 'object') return null;
-  const url = def.url || def.serverUrl || def.httpUrl || def.endpoint || null;
+  const gemini = source.client === 'Gemini CLI';
+  const url = (gemini && def.httpUrl) || def.url || def.serverUrl || def.httpUrl || def.endpoint || null;
   let transport = 'stdio';
-  if (url) transport = def.type === 'sse' || def.transport === 'sse' ? 'sse' : 'http';
+  if (url) transport = remoteTransport(def, source);
   const args = Array.isArray(def.args) ? def.args.map(String) : [];
   return {
     name,
@@ -64,7 +78,8 @@ export function loadConfig(source) {
     result.error = `Could not read file: ${e.code || e.message}`;
     return result;
   }
-  if (!result.text.trim()) return result;
+  // An empty file, or one with only comments (a fresh VS Code settings.json), has no servers.
+  if (!stripJsonc(result.text.replace(/^﻿/, '')).trim()) return result;
   try {
     result.doc = parseJsonc(result.text);
   } catch (e) {
