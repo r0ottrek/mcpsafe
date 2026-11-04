@@ -7,7 +7,7 @@ const PY_EXACT = /^\d+(\.\d+)*([a-z]+\d*)?(\.post\d+)?(\.dev\d+)?$/i;
 const COMMIT = /^[0-9a-f]{40}$/i;
 
 export function baseCommand(cmd) {
-  if (!cmd) return '';
+  if (!cmd || typeof cmd !== 'string') return '';
   return path.basename(cmd.replace(/\\/g, '/')).toLowerCase().replace(/\.(cmd|exe|bat|ps1)$/, '');
 }
 
@@ -45,8 +45,9 @@ const LAUNCHERS = new Set(['npx', 'bunx', 'npm', 'pnpm', 'yarn', 'bun', 'uvx', '
 
 // Unwrap `cmd /c npx ...` and `wsl npx ...` style launchers.
 export function effectiveCommand(server) {
-  let cmd = server.command || '';
-  let args = [...server.args];
+  // JSON can hold anything here; only a string command and string arguments are used.
+  let cmd = typeof server?.command === 'string' ? server.command : '';
+  let args = Array.isArray(server?.args) ? server.args.map(String) : [];
   // Some clients accept the whole command line in `command`. Split it like a
   // shell would, unless it looks like a path that happens to contain spaces:
   // a slash somewhere and a first word that is not a known launcher.
@@ -128,21 +129,55 @@ const DOCKER_VALUE_FLAGS = new Set([
   '--hooks-dir', '--init-path', '--os', '--passwd-entry', '--personality', '--pidfile', '--pod', '--pod-id-file', '--preserve-fds',
   '--rdt-class', '--requires', '--retry', '--retry-delay', '--sdnotify', '--seccomp-policy', '--secret', '--subgidname',
   '--subuidname', '--timeout', '--tz', '--uidmap', '--umask', '--unsetenv', '--variant',
+  '--authfile', '--cert-dir', '--creds', '--env-merge', '--health-log-destination', '--health-max-log-count', '--health-max-log-size',
+  '--health-on-failure', '--health-startup-cmd', '--health-startup-interval', '--health-startup-retries', '--health-startup-success',
+  '--health-startup-timeout', '--hostuser', '--hosts-file', '--image-volume', '--preserve-fd', '--shm-size-systemd', '--signature-policy',
+  '--systemd',
 ]);
 
+// Single-letter flags that take a value, for the combined (-itv /:/host) and
+// attached (-v/:/host) short forms.
+const DOCKER_SHORT_VALUE = new Set(['a', 'c', 'e', 'h', 'l', 'm', 'p', 'u', 'v', 'w']);
+const DOCKER_SHORT_BOOL = new Set(['i', 't', 'd', 'q', 'P']);
+
+// What an image reference can look like: [host[:port]/]path[:tag][@digest].
+// A path, a key=value pair or a word with characters an image cannot hold
+// is the value of an option this parser does not know.
+const IMAGE_REF = /^[A-Za-z0-9][A-Za-z0-9._-]*(?::\d+)?(?:\/[A-Za-z0-9._-]+)*(?::[\w][\w.-]*)?(?:@[A-Za-z0-9]+:[A-Fa-f0-9]+)?$/;
+
 export function parseDockerRun(args) {
-  const i0 = args.findIndex((a) => a === 'run');
+  const list = (Array.isArray(args) ? args : []).map(String);
+  const i0 = list.findIndex((a) => a === 'run');
   if (i0 < 0) return null;
   const flags = [];
   let image = null;
-  for (let i = i0 + 1; i < args.length; i++) {
-    const a = args[i];
-    if (a.startsWith('-')) {
+  let unknownLong = false;
+  for (let i = i0 + 1; i < list.length; i++) {
+    const a = list[i];
+    if (a.startsWith('-') && a.length > 1) {
+      unknownLong = false;
+      if (DOCKER_VALUE_FLAGS.has(a)) { flags.push([a, list[i + 1] ?? '']); i++; continue; }
+      if (!a.startsWith('--')) {
+        // -it, -itv /:/host, -v/:/host, -eFOO=bar: boolean letters, then at most one letter with a value.
+        let k = 1;
+        while (k < a.length && DOCKER_SHORT_BOOL.has(a[k])) { flags.push([`-${a[k]}`, true]); k++; }
+        if (k === a.length) continue;
+        if (DOCKER_SHORT_VALUE.has(a[k])) {
+          const rest = a.slice(k + 1).replace(/^=/, '');
+          if (rest) flags.push([`-${a[k]}`, rest]);
+          else { flags.push([`-${a[k]}`, list[i + 1] ?? '']); i++; }
+          continue;
+        }
+        flags.push([a, true]); // an unknown short option
+        continue;
+      }
       if (a.includes('=')) { flags.push([a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)]); continue; }
-      if (DOCKER_VALUE_FLAGS.has(a)) { flags.push([a, args[i + 1] ?? '']); i++; continue; }
       flags.push([a, true]);
+      unknownLong = true;
       continue;
     }
+    // The value of an unknown option, such as a podman flag missing from the list above.
+    if (unknownLong && !IMAGE_REF.test(a)) { flags[flags.length - 1][1] = a; unknownLong = false; continue; }
     image = a;
     break;
   }
