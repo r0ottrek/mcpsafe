@@ -5,7 +5,7 @@
 import { RULES, SEVERITIES } from '../rules.js';
 import { displayPath, POISON } from '../checks.js';
 import { impactByRule } from '../score.js';
-import { maskLine } from '../locate.js';
+import { snippet } from '../locate.js';
 
 export function makeColors(enabled) {
   const wrap = (open, close) => (s) => (enabled ? `\x1b[${open}m${s}\x1b[${close}m` : String(s));
@@ -55,9 +55,8 @@ function renderDiagnostics(result, { color = false, width = 100 } = {}) {
   };
   for (const f of findings) {
     push(`${sev[f.severity](`${f.severity}[${f.id}]`)}${c.bold(`: ${f.title}`)}`);
-    const text = textOf[f.file];
-    const lines = text ? text.split('\n') : [];
-    const src = f.line ? maskLine(lines[f.line - 1] ?? '').replace(/\t/g, '  ') : null;
+    // Masked with the whole file as context, so a value after a --flag line is hidden too.
+    const src = f.line ? snippet(textOf[f.file], f.line, 0)?.[0]?.text ?? null : null;
     const num = f.line ? String(f.line).padStart(gutterW) : '';
     const pad = ' '.repeat(gutterW);
     if (f.file) push(`${pad}${gut('-->')} ${displayPath(f.file)}${f.line ? `:${f.line}` : ''}`);
