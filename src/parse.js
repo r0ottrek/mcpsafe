@@ -11,17 +11,27 @@ function remoteTransport(def, source) {
   const type = [def.type, def.transport, def.transportType].find((t) => typeof t === 'string')?.toLowerCase();
   if (type === 'sse') return 'sse';
   if (HTTP_TYPES.has(type)) return 'http';
-  if (source.client === 'Gemini CLI' && def.url && !def.httpUrl) return 'sse';
+  if (source.client === 'Gemini CLI' && str(def.url) && !str(def.httpUrl)) return 'sse';
   return 'http';
 }
+
+// String() throws on an object such as {"toString": 1}, so values of the wrong
+// type become JSON text (or are dropped) instead of reaching the reports.
+function safeString(v) {
+  if (typeof v === 'string') return v;
+  if (v === null || typeof v !== 'object') return String(v);
+  try { return JSON.stringify(v); } catch { return ''; }
+}
+const str = (v) => (typeof v === 'string' && v ? v : null);
 
 function normServer(name, def, source, jsonPath) {
   if (!def || typeof def !== 'object') return null;
   const gemini = source.client === 'Gemini CLI';
-  const url = (gemini && def.httpUrl) || def.url || def.serverUrl || def.httpUrl || def.endpoint || null;
+  // Only string urls count: an object or array here is not an address and cannot be connected to.
+  const url = (gemini && str(def.httpUrl)) || str(def.url) || str(def.serverUrl) || str(def.httpUrl) || str(def.endpoint) || null;
   let transport = 'stdio';
   if (url) transport = remoteTransport(def, source);
-  const args = Array.isArray(def.args) ? def.args.map(String) : [];
+  const args = Array.isArray(def.args) ? def.args.map(safeString) : [];
   return {
     name,
     client: source.client,
@@ -34,9 +44,9 @@ function normServer(name, def, source, jsonPath) {
     env: def.env && typeof def.env === 'object' ? def.env : {},
     url,
     headers: def.headers && typeof def.headers === 'object' ? def.headers : {},
-    cwd: def.cwd || null,
+    cwd: str(def.cwd),
     disabled: def.disabled === true || def.enabled === false,
-    autoApprove: [def.autoApprove, def.alwaysAllow].flatMap((v) => (Array.isArray(v) ? v : [])),
+    autoApprove: [def.autoApprove, def.alwaysAllow].flatMap((v) => (Array.isArray(v) ? v : [])).map((t) => (t === true ? t : safeString(t))),
     trust: def.trust === true,
     raw: def,
   };

@@ -142,7 +142,9 @@ function looksLikeTypo(n, p) {
  * its scope dropped ("@stripe/mcp" as "stripe-mcp"), which unofficial ports also do.
  * @param {string} name package or image name
  * @param {string} [manager] 'npm', 'pypi' or 'docker'; when given, only registries whose names can collide are compared
- * @returns {{popular: string, kind: 'typo'|'scope'} | null}
+ * 'shorthand' for the package name without its @ ("playwright/mcp"), which npx
+ * reads as a GitHub owner/repo.
+ * @returns {{popular: string, kind: 'typo'|'scope'|'shorthand'} | null}
  */
 export function typosquatMatch(name, manager) {
   if (typeof name !== 'string' || !name) return null;
@@ -154,6 +156,8 @@ export function typosquatMatch(name, manager) {
   for (const p of candidates) {
     if (!p.startsWith('@') || (n !== p.slice(1) && n !== p.slice(1).replace('/', '-'))) continue;
     // Nobody ports the reference servers under the protocol's own name, so that one stays a typosquat.
+    // For npx, "owner/repo" without the @ is GitHub shorthand: code from github.com/owner/repo, not the package.
+    if (n === p.slice(1) && manager !== 'docker') return { popular: p, kind: 'shorthand' };
     return { popular: p, kind: p.startsWith('@modelcontextprotocol/') ? 'typo' : 'scope' };
   }
   for (const p of candidates) {
@@ -385,6 +389,8 @@ function checkPackages(ctx) {
       continue;
     }
     if (p.manager === 'docker') {
+      // ${IMAGE} or mcp/${NAME}: the variable may carry the tag, so nothing is known.
+      if (!p.version && /\$|%[A-Za-z_][A-Za-z0-9_]*%/.test(p.spec)) continue;
       if (!p.pinned) out.push(finding('MCS004', ctx, p.version ? `Image ${spec} uses the mutable :latest tag.` : `Image ${spec} has no tag, so it resolves to :latest.`, { evidence: spec, jsonPath: argPath(s, p.spec) }));
     } else if (!p.pinned) {
       out.push(finding('MCS003', ctx,
@@ -392,6 +398,7 @@ function checkPackages(ctx) {
         { evidence: spec, jsonPath: argPath(s, p.spec) }));
     }
     const squat = typosquatMatch(p.name, p.manager);
+    if (squat?.kind === 'shorthand') out.push(finding('MCS013', ctx, `"${name}" has no @, so npx reads it as the GitHub repository ${name}, not the popular package "${squat.popular}".`, { evidence: name, jsonPath: argPath(s, p.spec) }));
     if (squat?.kind === 'typo') out.push(finding('MCS013', ctx, `"${name}" is very close to the popular package "${squat.popular}".`, { evidence: name, jsonPath: argPath(s, p.spec) }));
     // Unscoped community ports of scoped packages are common, so this one is a prompt to check the publisher.
     if (squat?.kind === 'scope') out.push(finding('MCS013', ctx, `"${name}" has the name of the popular package "${squat.popular}" without its scope. Check that it comes from the publisher you expect.`, { severity: 'medium', evidence: name, jsonPath: argPath(s, p.spec) }));
@@ -554,7 +561,11 @@ const isInvisibleCode = (c) => c === 0xAD || c === 0x180E || (c >= 0x200B && c <
   || (c >= 0x2066 && c <= 0x2069) || c === 0xFEFF || (c >= 0xE0000 && c <= 0xE007F);
 const isAsciiVisible = (c) => c >= 0x21 && c <= 0x7E;
 // Joiners that build emoji (a family, a profession with a skin tone) and the tag sequence of a subdivision flag.
-const FILE_EMOJI_JOINS = /(?<=[\p{Extended_Pictographic}\p{Emoji_Modifier}]\uFE0F?)\u200D(?=\p{Extended_Pictographic})|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
+// A subdivision flag spells a short code in lowercase tag letters and digits:
+// a two-letter region and one to three more (gbeng, gbsct, usca). Longer runs,
+// spaces and capitals are text hidden behind a flag, not a flag.
+const FLAG_TAGS = String.raw`\u{1F3F4}[\u{E0061}-\u{E007A}]{2}[\u{E0030}-\u{E0039}\u{E0061}-\u{E007A}]{1,3}\u{E007F}`;
+const FILE_EMOJI_JOINS = new RegExp(String.raw`(?<=[\p{Extended_Pictographic}\p{Emoji_Modifier}]\uFE0F?)\u200D(?=\p{Extended_Pictographic})|${FLAG_TAGS}`, 'gu');
 
 /**
  * The invisible characters in config text that can hide something, as
@@ -856,7 +867,7 @@ const CONFUSABLE = Object.fromEntries([...
 ].reduce((pairs, ch, i, a) => (i % 2 ? pairs : [...pairs, [ch, a[i + 1]]]), []));
 const INVISIBLE_ONE = new RegExp(`^(?:${INVISIBLE.source})$`, 'u');
 // Zero-width joiners inside emoji and the tag characters of subdivision flags are legitimate.
-const EMOJI_JOINS = /(?<=\p{Extended_Pictographic}️?)‍(?=\p{Extended_Pictographic})|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
+const EMOJI_JOINS = new RegExp(String.raw`(?<=\p{Extended_Pictographic}\uFE0F?)\u200D(?=\p{Extended_Pictographic})|${FLAG_TAGS}`, 'gu');
 const TAG_TEXT = /[\u{E0020}-\u{E007E}]{4,}/gu;
 const BASE64_RUN = /[A-Za-z0-9+/]{40,}={0,2}/g;
 
@@ -1007,8 +1018,8 @@ function findSignals(segments, nested = false, allTheft = false) {
 
   // Text hidden in Unicode tag characters or base64 is decoded and scanned again.
   const hidden = [];
-  for (const m of full.matchAll(TAG_TEXT)) {
-    if (/\u{1F3F4}$/u.test(full.slice(0, m.index))) continue;
+  // Real flags are blanked first (same length, so indexes still line up).
+  for (const m of full.replace(EMOJI_JOINS, (x) => ' '.repeat(x.length)).matchAll(TAG_TEXT)) {
     hidden.push({ text: String.fromCharCode(...[...m[0]].map((c) => c.codePointAt(0) - 0xE0000)), start: m.index, end: m.index + m[0].length });
   }
   let blob = null;

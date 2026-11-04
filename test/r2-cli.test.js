@@ -301,7 +301,7 @@ test('saved responses with the same file name in two folders stay two servers', 
 
 test('a file that only a user setup has keeps user scope wherever it is', () => {
   const dir = tmpdir();
-  const desktop = writeJson(path.join(dir, 'backup', 'claude_desktop_config.json'), { mcpServers: {} });
+  const desktop = writeJson(path.join(dir, 'backup', 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), { mcpServers: {} });
   const dotClaude = writeJson(path.join(dir, 'h', '.claude.json'), { mcpServers: {} });
   const codeUser = writeJson(path.join(dir, 'copy', 'Code', 'User', 'mcp.json'), { servers: {} });
   for (const p of [desktop, dotClaude, codeUser]) {

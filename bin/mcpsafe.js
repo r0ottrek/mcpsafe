@@ -142,7 +142,7 @@ function main() {
       },
     });
   } catch (e) {
-    console.error(`mcpsafe: ${safe(e.message)}\nRun mcpsafe --help for usage.`);
+    console.error(`mcpsafe: ${safe(e.message.split('\n').map((l) => l.trim()).join(' '))}\nRun mcpsafe --help for usage.`);
     return Promise.resolve(2);
   }
   const { values: v, positionals } = parsed;
@@ -168,6 +168,11 @@ function main() {
 
   // A mistyped --home would scan nothing and pass every gate.
   if (v.home !== undefined) {
+    // --home "" (an unset variable in CI) must not fall back to the real home.
+    if (!v.home.trim()) {
+      console.error('mcpsafe: --home needs a folder; it was given an empty value');
+      return Promise.resolve(2);
+    }
     let st = null;
     try { st = fs.statSync(path.resolve(v.home)); } catch { /* reported below */ }
     if (!st?.isDirectory()) {

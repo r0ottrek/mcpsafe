@@ -96,7 +96,7 @@ Where a rule gives a range, the severity depends on the finding, so check the co
 | MCS010 | critical | A launch command that pipes a downloaded script into a shell |
 | MCS011 | medium to high | Auto-approval: `autoApprove`, `alwaysAllow`, `trust: true`, broad `mcp__` allow rules, `bypassPermissions`. Medium for a list of named tools or servers, high when everything is approved: `trust: true`, `bypassPermissions`, a `*` wildcard or `mcp__*` |
 | MCS012 | medium | Claude Code's `enableAllProjectMcpServers`, which lets any cloned repository start servers |
-| MCS013 | medium to high | Package names one or two characters away from a popular MCP server (high), or a popular server's name without its npm scope (medium) |
+| MCS013 | medium to high | Package names one or two characters away from a popular MCP server, or its name without the @ (which npx reads as a GitHub repository): high. A popular server's name with its npm scope dropped (`stripe-mcp` for `@stripe/mcp`): medium |
 | MCS014 | medium | Servers run from `/tmp`, `Downloads` or another temporary folder |
 | MCS015 | high | Invisible Unicode (zero-width, bidirectional override, tag characters) in a config |
 | MCS016 | low to critical | Hidden instructions in tool or parameter descriptions (needs `--connect` or `--tools`). Critical for clear tool poisoning, such as overriding the model's instructions or sending files and secrets somewhere; high for text that tells the model to hide what it does, or to run commands on sensitive files; medium or low for weaker signs that are worth a read |
@@ -119,7 +119,7 @@ The reasoning and the fix for each rule are in [src/rules.js](src/rules.js). `mc
 | Cline, Roo Code | their settings files under the `globalStorage` of VS Code, Cursor and Windsurf, and `.roo/mcp.json` |
 | Gemini CLI | `~/.gemini/settings.json`, `~/.gemini/extensions/*/gemini-extension.json`, `.gemini/settings.json` |
 
-With no arguments it scans these files in your home directory and the project files in the current folder, without descending into subfolders. A folder passed as an argument is searched recursively. A config folder under another name (a dotfiles copy of `.cursor`, a VS Code `User` folder) works too: its `mcp.json` is read directly. Files that only a user's own setup has, such as `claude_desktop_config.json`, `.claude.json` or an editor's `User` folder, count as user configs wherever they are, and so does every user config in a folder that looks like a home directory. JSON with comments and trailing commas is fine.
+With no arguments it scans these files in your home directory and the project files in the current folder, without descending into subfolders. A folder passed as an argument is searched recursively. A config folder under another name (a dotfiles copy of `.cursor`, a VS Code `User` folder) works too: its `mcp.json` is read directly. Files that only a user's own setup has count as user configs even outside your home folder: `claude_desktop_config.json` in Claude Desktop's own folder (`Application Support/Claude`, `AppData/Roaming/Claude` or `.config/Claude`), `.claude.json`, and an editor's `User` folder. So does every user config in a folder that looks like a home directory. A `claude_desktop_config.json` anywhere else, such as an example committed to a repository, is a project file. Anything inside a git checkout (a folder with `.git` at or above it) is a project file too, unless it is one of the user configs of the home folder being scanned. JSON with comments and trailing commas is fine.
 
 ## In CI
 

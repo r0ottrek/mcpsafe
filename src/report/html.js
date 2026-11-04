@@ -12,7 +12,10 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', 
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 // The text a reader sees in a fragment of this report's own markup (escaped
 // text and closed tags only), for the search box. Line numbers are left out.
-export const visibleText = (html) => html.replace(/<span class="no">\d+<\/span>/g, ' ').replace(/<[^<>]*>/g, ' ')
+// Line and block boundaries become a space; inline tags such as <mark> and
+// <code> are removed, so a phrase that crosses a highlight is still found.
+const BLOCK_TAG = /<(?:p|pre|br|div|li|td|th|tr|span class="ln[^"<>]*")(?:[\s>][^<>]*)?>|<\/(?:p|pre|div|li|td|th|tr)>/g;
+export const visibleText = (html) => html.replace(/<span class="no">\d+<\/span>/g, '').replace(BLOCK_TAG, ' ').replace(/<[^<>]*>/g, '')
   .replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e])).replace(/\s+/g, ' ');
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 const NUMBER_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];

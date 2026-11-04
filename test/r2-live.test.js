@@ -144,7 +144,7 @@ test('Gemini CLI: bare $VAR is expanded; other clients and unset names are left 
   // like a password with a "$" in it is still passed on).
   assert.equal(expandVars('pa$sw0rd', g), 'pa$sw0rd');
   assert.equal(g.misses, 0);
-  assert.ok(g.unresolved.has('$sw0rd'));
+  assert.ok(!g.unresolved.has('$sw0rd'), 'an unset bare name is never recorded, so it is never printed');
   assert.equal(expandVars('$ $1 $$ ${', g), '$ $1 $$ ${');
   assert.ok(g.secrets.has('tok-value-1'));
 

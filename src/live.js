@@ -44,6 +44,7 @@ const NAME = '[A-Za-z_][A-Za-z0-9_]*';
 const PLAIN = new RegExp(`^(?:env:)?(${NAME})$`);
 const WITH_DEFAULT = new RegExp(`^(${NAME}):-([\\s\\S]*)$`);
 const BARE = new RegExp(NAME, 'y');
+const REFERENCE = new RegExp(`^(?:(?:env:)?${NAME}|input:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})$`);
 
 function expandOne(whole, inner, ctx) {
   if (inner === 'userHome' && ctx.home) return ctx.home;
@@ -57,7 +58,9 @@ function expandOne(whole, inner, ctx) {
     if (v) { ctx.secrets?.add(v); return v; }
     return m[2];
   }
-  ctx.unresolved?.add(whole);
+  // Only a well-formed reference is named in errors: ${NAME}, ${env:NAME} or
+  // ${input:id}. Other text between ${ and } can be part of a password.
+  if (REFERENCE.test(inner)) ctx.unresolved?.add(whole);
   ctx.misses = (ctx.misses || 0) + 1;
   return whole;
 }
@@ -71,8 +74,8 @@ function expandOne(whole, inner, ctx) {
  *
  * With ctx.bare (Gemini CLI, which expands bare $VAR anywhere in its
  * settings), $VAR is expanded too. An unset bare $VAR stays as it is, as Gemini
- * CLI leaves it, and does not count as a miss: a "$" inside a password must not
- * make the value disappear.
+ * CLI leaves it, does not count as a miss and is not recorded in ctx.unresolved:
+ * a "$" inside a password must not make the value disappear or be printed.
  *
  * A plain scan rather than one regex, so that a long run of "${" with no
  * closing brace takes linear time.
@@ -100,7 +103,9 @@ export function expandVars(value, ctx) {
       const m = BARE.exec(s);
       if (m) {
         const v = ctx.env[m[0]];
-        if (v !== undefined) { ctx.secrets?.add(v); out += v; } else { ctx.unresolved?.add(`$${m[0]}`); out += `$${m[0]}`; }
+        // An unset bare $NAME is usually literal text, such as part of a
+        // password, so it is kept as it is and never named in an error.
+        if (v !== undefined) { ctx.secrets?.add(v); out += v; } else out += `$${m[0]}`;
         i = d + 1 + m[0].length;
         continue;
       }
@@ -616,7 +621,9 @@ function cleanMessage(e, ctx) {
   // Values from the environment and credentials from the config, plus
   // anything else that looks like a credential.
   let msg = maskString(e?.message || String(e), { known: secretIndex(ctx.secrets, 4) });
-  if (ctx.unresolved.size) msg += ` (not set: ${[...ctx.unresolved].join(', ')})`;
+  // Names only, and left out when a name itself looks like a credential.
+  const names = [...ctx.unresolved].filter((n) => maskString(n) === n);
+  if (names.length) msg += ` (not set: ${names.join(', ')})`;
   return msg;
 }
 

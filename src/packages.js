@@ -150,6 +150,17 @@ const DOCKER_VALUE_FLAGS = new Set([
 // attached (-v/:/host) short forms.
 const DOCKER_SHORT_VALUE = new Set(['a', 'c', 'e', 'h', 'l', 'm', 'p', 'u', 'v', 'w']);
 const DOCKER_SHORT_BOOL = new Set(['i', 't', 'd', 'q', 'P']);
+// Long options that never take a separate value. They are not "unknown", so the
+// argument after them is never taken as their value.
+const DOCKER_BOOL_LONG = new Set([
+  '--rm', '--init', '--privileged', '--read-only', '--interactive', '--tty', '--detach', '--publish-all', '--quiet',
+  '--no-healthcheck', '--oom-kill-disable', '--sig-proxy', '--disable-content-trust', '--use-api-socket', '--help',
+  // podman only
+  '--replace', '--rmi', '--no-hosts', '--read-only-tmpfs', '--env-host', '--http-proxy', '--tls-verify', '--privileged-ports',
+]);
+// A token that holds a variable ($NAME, ${NAME}, ${input:x}, %NAME%) is an image
+// the client fills in, never the value of an unknown option.
+const HAS_VARIABLE = /\$|%[A-Za-z_][A-Za-z0-9_]*%/;
 
 // What an image reference can look like: [host[:port]/]path[:tag][@digest].
 // A path, a key=value pair or a word with characters an image cannot hold
@@ -184,11 +195,11 @@ export function parseDockerRun(args) {
       }
       if (a.includes('=')) { flags.push([a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)]); continue; }
       flags.push([a, true]);
-      unknownLong = true;
+      unknownLong = !DOCKER_BOOL_LONG.has(a);
       continue;
     }
     // The value of an unknown option, such as a podman flag missing from the list above.
-    if (unknownLong && !IMAGE_REF.test(a)) { flags[flags.length - 1][1] = a; unknownLong = false; continue; }
+    if (unknownLong && !IMAGE_REF.test(a) && !HAS_VARIABLE.test(a)) { flags[flags.length - 1][1] = a; unknownLong = false; continue; }
     image = a;
     break;
   }
