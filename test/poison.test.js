@@ -41,7 +41,8 @@ test('malicious corpus: every poisoned tool is detected, with severity matching 
   const refs = f.filter((x) => x.id === 'MCS017' && x.severity === 'high');
   const evil = sets.find((s) => s.server === 'evil').tools;
   assert.ok(evil.length >= 40);
-  const notCritical = { wa_prefixed: 'medium', hide_only: 'high' };
+  // wa_prefixed redirects another server's send_message to a fixed number: critical with the shadowing.
+  const notCritical = { hide_only: 'high' };
   for (const t of evil) {
     const hit = poison.get(t.name);
     assert.ok(hit, `${t.name} must be flagged`);
