@@ -35,7 +35,22 @@ const isLocalHost = (h) => /^(localhost|127(\.\d+){3}|\[?::1\]?|0\.0\.0\.0|host\
 // "keyboard" or "author" do not count.
 const CRED_PARAM = /^(?:.*[_.-])?(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|sig|signature|credentials?|access[_-]?(?:token|key)|client[_-]?secret)$/i;
 const isCredentialParam = (k) => CRED_PARAM.test(String(k).replace(/([a-z0-9])([A-Z])/g, '$1_$2'));
-const isRealCredentialValue = (v) => !!v && v.length >= 8 && !isPlaceholder(v) && !/\{\{.*\}\}/.test(v);
+// Template forms that README examples use: [YOUR_API_KEY], {API_KEY}, {{TOKEN}}, __TOKEN__.
+const TEMPLATE_VALUE = /^(?:\[[^\]]*\]|\{[^{}]*\}|\{\{[^{}]*\}\}|__[A-Za-z0-9_]+__)$/;
+// {{...}} anywhere in the value, found with indexOf so a long run of "{{" stays linear.
+const hasMustache = (v) => { const a = v.indexOf('{{'); return a >= 0 && v.indexOf('}}', a + 2) >= 0; };
+const isRealCredentialValue = (v) => !!v && v.length >= 8 && !isPlaceholder(v) && !TEMPLATE_VALUE.test(v.trim()) && !hasMustache(v);
+// Parameter names that end in _key or _token without being credentials:
+// pagination cursors, sort keys, idempotency keys.
+const NOT_CRED_PREFIX = /^(?:sort|order|group|partition|page|next|prev|previous|continuation|cursor|sync|resume|pagination|idempotency|cache|lookup|primary|foreign|row|map|hash|search|filter|item|object|file|s3|bucket|public|pub)[_.-]?(?:key|token)$/i;
+// A bare `auth` or a name that only ends in key/token is a weak hint: the value has to look like a random string too.
+const STRONG_CRED_PARAM = /^(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|sig|signature|credentials?|access[_-]?(?:token|key)|client[_-]?secret|(?:.*[_.-])?(?:api[_-]?key|apikey|access[_-]?token|secret|password|passwd|signature))$/i;
+const looksRandom = (v) => v.length >= 16 && /\d/.test(v) && /[A-Za-z]/.test(v) && !/^[a-z]+(?:[_-][a-z]+)*\d{0,3}$/i.test(v);
+function credentialQuery(k, v) {
+  const key = String(k).replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  if (!isCredentialParam(k) || NOT_CRED_PREFIX.test(key) || !isRealCredentialValue(v)) return false;
+  return STRONG_CRED_PARAM.test(key) || looksRandom(v) || !!detectSecret(v, k);
+}
 
 const MASK = '•'.repeat(8);
 
@@ -87,9 +102,18 @@ const POPULAR_BY_MANAGER = {
 };
 export const POPULAR_PACKAGES = Object.values(POPULAR_BY_MANAGER).flat();
 
+// Registries whose names can be compared with each other. Several PyPI server
+// names have been squatted on npm (npm replaced mcp-server-fetch and
+// mcp-server-git with security holding packages), so npm and PyPI names are
+// checked against both lists. Image names follow different rules.
+const COMPARABLE = { npm: ['npm', 'pypi'], pypi: ['pypi', 'npm'], docker: ['docker'] };
+
 // Real, published packages whose names sit next to a popular one. They are
-// different projects, not typosquats.
-const KNOWN_DISTINCT = new Set(['mcp-server-gsc', 'mcp-server-ga4', 'mcp-server-gcp', 'mcp-server-kit', 'mcp-server-line', 'mcp-server-sqlite3']);
+// different projects with their own repository and release history, not
+// typosquats. playwright-mcp is an independent Playwright server published
+// since March 2025.
+const KNOWN_DISTINCT = new Set(['mcp-server-gsc', 'mcp-server-ga4', 'mcp-server-gcp', 'mcp-server-kit', 'mcp-server-line', 'mcp-server-sqlite3',
+  'playwright-mcp']);
 
 export function levenshtein(a, b) {
   if (a === b) return 0;
@@ -143,24 +167,41 @@ function looksLikeTypo(n, p) {
 }
 
 /**
+ * The popular package a name imitates, and how: 'typo' for a misspelling, a
+ * misspelled scope or an unscoped copy of a reference server
+ * ("modelcontextprotocol-server-github"), 'scope' for a vendor package with
+ * its scope dropped ("@stripe/mcp" as "stripe-mcp"), which unofficial ports also do.
  * @param {string} name package or image name
- * @param {string} [manager] 'npm', 'pypi' or 'docker'; when given, only names from the same registry are compared
+ * @param {string} [manager] 'npm', 'pypi' or 'docker'; when given, only registries whose names can collide are compared
+ * @returns {{popular: string, kind: 'typo'|'scope'} | null}
  */
-export function typosquatOf(name, manager) {
+export function typosquatMatch(name, manager) {
+  if (typeof name !== 'string' || !name) return null;
   const n = name.toLowerCase();
   if (POPULAR_PACKAGES.includes(n) || KNOWN_DISTINCT.has(n)) return null;
-  const candidates = manager && POPULAR_BY_MANAGER[manager] ? POPULAR_BY_MANAGER[manager] : POPULAR_PACKAGES;
+  const candidates = manager && COMPARABLE[manager] ? COMPARABLE[manager].flatMap((m) => POPULAR_BY_MANAGER[m]) : POPULAR_PACKAGES;
+  // Same package name with the scope dropped, e.g. "modelcontextprotocol-server-github".
+  // Checked first, because the dropped scope is also within the edit distance of a typo.
   for (const p of candidates) {
-    if (levenshtein(n, p) <= 2 && looksLikeTypo(n, p)) return p;
-    // Same package name under a different / missing scope, e.g. "modelcontextprotocol-server-github"
+    if (!p.startsWith('@') || (n !== p.slice(1) && n !== p.slice(1).replace('/', '-'))) continue;
+    // Nobody ports the reference servers under the protocol's own name, so that one stays a typosquat.
+    return { popular: p, kind: p.startsWith('@modelcontextprotocol/') ? 'typo' : 'scope' };
+  }
+  for (const p of candidates) {
+    if (levenshtein(n, p) <= 2 && looksLikeTypo(n, p)) return { popular: p, kind: 'typo' };
+    // A misspelled @modelcontextprotocol scope with the right package name.
     const bare = p.replace(/^@[^/]+\//, '');
-    if (p.startsWith('@') && n !== p && (n === p.slice(1) || n === p.slice(1).replace('/', '-'))) return p;
     if (p.startsWith('@modelcontextprotocol/') && n.endsWith(`/${bare}`) && !n.startsWith('@modelcontextprotocol/')) {
       const scope = n.split('/')[0];
-      if (levenshtein(scope, '@modelcontextprotocol') <= 3) return p;
+      if (levenshtein(scope, '@modelcontextprotocol') <= 3) return { popular: p, kind: 'typo' };
     }
   }
   return null;
+}
+
+/** The popular package `name` looks like a typosquat of, or null. */
+export function typosquatOf(name, manager) {
+  return typosquatMatch(name, manager)?.popular ?? null;
 }
 
 const SHELL_PACKAGES = /(desktop-commander|mcp-shell|shell-mcp|server-shell|shell-server|mcp-server-commands|terminal-mcp|mcp-terminal|server-terminal|cli-mcp-server|mcp-server-shell|iterm-mcp|win-cli-mcp|server-win-cli|claude-code-mcp|terminal[-_]controller|ssh-mcp|mcp-ssh)/i;
@@ -169,6 +210,17 @@ const FS_PACKAGES = /(server-filesystem|mcp\/filesystem|filesystem-mcp|mcp-files
 const FS_SCRIPT = /\/(server-)?filesystem\//i;
 // Bridges that connect a stdio client to a remote server given as an argument.
 const BRIDGES = /(^|\/)(mcp-remote|supergateway|mcp-proxy)$/i;
+// The same bridges as a folder in a script path (node_modules/mcp-remote/dist/proxy.js).
+const BRIDGE_PATH = /(^|\/)(mcp-remote|supergateway|mcp-proxy)\//i;
+
+// A config value that should be a string. JSON can hold anything, so arrays,
+// numbers and objects are treated as absent rather than coerced.
+const textOf = (v) => (typeof v === 'string' && v ? v : null);
+
+function hostOf(url) {
+  try { return new URL(url).host || maskText(url).slice(0, 80); } catch { return maskText(url).slice(0, 80); }
+}
+
 const HOME_VARIABLES = ['~', '$home', '${home}', '%userprofile%', '%homepath%', '${userhome}', '${env:home}', '${env:userprofile}', '$env:userprofile', '$env:home'];
 
 function broadPath(p) {
@@ -194,7 +246,19 @@ function argPath(s, value) {
 // the flags that take a value (skipped), load code (kept) or mean that no
 // script file follows (stop).
 const INTERPRETERS = {
-  node: { code: ['-r', '--require', '--import', '--loader', '--experimental-loader'], stop: ['-e', '--eval', '-p', '--print'] },
+  node: {
+    code: ['-r', '--require', '--import', '--loader', '--experimental-loader'],
+    value: ['--env-file', '--env-file-if-exists', '--watch-path', '--title', '--inspect-port', '--debug-port', '--input-type', '--conditions', '-C',
+      '--stack-size', '--max-old-space-size', '--max-semi-space-size', '--max-http-header-size', '--openssl-config', '--icu-data-dir',
+      '--redirect-warnings', '--report-dir', '--report-directory', '--report-filename', '--report-signal', '--diagnostic-dir', '--cpu-prof-dir',
+      '--cpu-prof-name', '--cpu-prof-interval', '--heap-prof-dir', '--heap-prof-name', '--heap-prof-interval', '--heapsnapshot-signal',
+      '--heapsnapshot-near-heap-limit', '--disable-warning', '--localstorage-file', '--secure-heap', '--secure-heap-min', '--unhandled-rejections',
+      '--trace-event-categories', '--trace-event-file-pattern', '--dns-result-order', '--experimental-default-type', '--experimental-config-file',
+      '--network-family-autoselection-attempt-timeout', '--tls-cipher-list', '--tls-keylog', '--use-largepages', '--v8-pool-size',
+      '--test-reporter', '--test-reporter-destination', '--test-name-pattern', '--test-skip-pattern', '--test-concurrency', '--test-shard',
+      '--test-timeout', '--watch-kill-signal', '--policy-integrity', '--experimental-policy', '--snapshot-blob', '--tsconfig', '--project'],
+    stop: ['-e', '--eval', '-p', '--print'],
+  },
   python: { value: ['-X', '-W', '-Q'], stop: ['-m', '-c'] },
   deno: { sub: ['run'], value: ['--config', '-c', '--import-map', '--env-file', '--location', '--lock', '--cert'] },
   bun: { sub: ['run'], code: ['-r', '--preload'], value: ['--cwd', '--env-file', '--config', '-c'], stop: ['-e', '--eval', '-p', '--print'] },
@@ -230,6 +294,21 @@ function scriptArgs(base, args) {
   return out;
 }
 
+// Packages that are themselves interpreters: `npx tsx ./src/index.ts`.
+const RUNNER_PACKAGES = new Set(['tsx', 'ts-node', 'node']);
+
+// The scripts a server runs: through an interpreter command, or through an
+// interpreter package started by npx and similar launchers.
+function serverScripts(s) {
+  const { base, args } = effectiveCommand(s);
+  const pkgs = launchedPackages(s);
+  if (!pkgs.length) return scriptArgs(base, args);
+  const p = pkgs[0];
+  if (p.kind !== 'registry' || !RUNNER_PACKAGES.has(String(p.name).toLowerCase())) return [];
+  const at = args.indexOf(p.spec);
+  return at < 0 ? [] : scriptArgs(String(p.name).toLowerCase(), args.slice(at + 1));
+}
+
 // Flags and their values in an argument list: --key=value, --key value, and
 // HTTP header arguments such as "Authorization: Bearer <token>".
 function secretsInArgs(list) {
@@ -261,27 +340,31 @@ function checkSecrets(ctx) {
       `${det.type} found in ${where}${project ? '. This is a project file that is likely committed to git' : ''}.`,
       { severity, evidence: mask(det.match), jsonPath }));
   };
-  for (const [k, v] of Object.entries(s.env)) {
-    const det = detectSecret(v, k);
+  // Only text and numbers can hold a credential; nested objects and arrays are not values a client passes on.
+  const scalar = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v) : null);
+  for (const [k, v] of Object.entries(s.env || {})) {
+    const det = detectSecret(scalar(v), k);
     if (det) report(`env.${k}`, det, `${s.jsonPath}.env.${k}`);
   }
-  for (const [k, v] of Object.entries(s.headers)) {
-    const det = detectSecret(v, k);
+  for (const [k, v] of Object.entries(s.headers || {})) {
+    const det = detectSecret(scalar(v), k);
     if (det) report(`headers.${k}`, det, `${s.jsonPath}.headers.${k}`);
   }
   // --api-key=xxx, --token xxx, --header "Authorization: Bearer xxx"
-  for (const [i, det] of secretsInArgs(s.args)) report(`args[${i}]`, det, `${s.jsonPath}.args[${i}]`);
-  // The whole command line written into `command`.
-  if (s.command && !s.args.length && /\s/.test(s.command.trim())) {
-    const seen = new Set();
-    for (const [, det] of secretsInArgs(splitCommandLine(s.command))) {
+  const seen = new Set();
+  for (const [i, det] of secretsInArgs(s.args)) { seen.add(det.match); report(`args[${i}]`, det, `${s.jsonPath}.args[${i}]`); }
+  // A command line written into `command`, also when more arguments follow in `args`.
+  const command = textOf(s.command);
+  if (command && /\s/.test(command.trim())) {
+    for (const [, det] of secretsInArgs(splitCommandLine(command))) {
       if (seen.has(det.match)) continue;
       seen.add(det.match);
       report('command', det, `${s.jsonPath}.command`);
     }
   }
-  if (s.url) {
-    const det = detectSecret(s.url, '');
+  const url = textOf(s.url);
+  if (url) {
+    const det = detectSecret(url, '');
     if (det) report('url', det, `${s.jsonPath}.url`);
   }
   return out;
@@ -290,12 +373,16 @@ function checkSecrets(ctx) {
 // The server URL, plus the remote URL given to a bridge such as mcp-remote.
 function serverUrls(s) {
   const out = [];
-  if (s.url) {
-    const key = ['url', 'serverUrl', 'httpUrl', 'endpoint'].find((k) => s.raw[k] === s.url) || 'url';
-    out.push([s.url, `${s.jsonPath}.${key}`]);
+  const url = textOf(s.url);
+  if (url) {
+    const key = ['url', 'serverUrl', 'httpUrl', 'endpoint'].find((k) => s.raw?.[k] === s.url) || 'url';
+    out.push([url, `${s.jsonPath}.${key}`]);
   }
   const { base, args } = effectiveCommand(s);
-  if (BRIDGES.test(base) || launchedPackages(s).some((p) => BRIDGES.test(p.name))) {
+  const pkgs = launchedPackages(s);
+  // A bridge run from an install folder: node /opt/node_modules/mcp-remote/dist/proxy.js <url>
+  const bridgeScript = !pkgs.length && scriptArgs(base, args).some((a) => BRIDGE_PATH.test(a.replace(/\\/g, '/')));
+  if (BRIDGES.test(base) || bridgeScript || pkgs.some((p) => BRIDGES.test(p.name))) {
     for (const a of args) {
       const v = (a.match(/^(?:--?[\w-]+=)?(https?:\/\/\S+)$/i) || [])[1];
       if (v && !out.some(([u]) => u === v)) out.push([v, argPath(s, a)]);
@@ -314,7 +401,7 @@ function checkUrl(ctx) {
       out.push(finding('MCS005', ctx, `Connects to ${u.host} over plain http.`, { evidence: maskText(url.replace(/[?#].*/, '')), jsonPath }));
     }
     for (const [k, v] of u.searchParams) {
-      if (isCredentialParam(k) && isRealCredentialValue(v)) {
+      if (credentialQuery(k, v)) {
         out.push(finding('MCS006', ctx, `Query parameter "${k}" carries a credential.`, { evidence: `${k}=${mask(v)}`, jsonPath }));
       }
     }
@@ -342,20 +429,32 @@ function checkPackages(ctx) {
         p.version ? `${name} is requested as "${maskText(p.version)}", which is not an exact version.` : `${name} runs whatever version is newest on ${p.manager} at launch.`,
         { evidence: spec, jsonPath: argPath(s, p.spec) }));
     }
-    const squat = typosquatOf(p.name, p.manager);
-    if (squat) out.push(finding('MCS013', ctx, `"${name}" is very close to the popular package "${squat}".`, { evidence: name, jsonPath: argPath(s, p.spec) }));
+    const squat = typosquatMatch(p.name, p.manager);
+    if (squat?.kind === 'typo') out.push(finding('MCS013', ctx, `"${name}" is very close to the popular package "${squat.popular}".`, { evidence: name, jsonPath: argPath(s, p.spec) }));
+    // Unscoped community ports of scoped packages are common, so this one is a prompt to check the publisher.
+    if (squat?.kind === 'scope') out.push(finding('MCS013', ctx, `"${name}" has the name of the popular package "${squat.popular}" without its scope. Check that it comes from the publisher you expect.`, { severity: 'medium', evidence: name, jsonPath: argPath(s, p.spec) }));
   }
   return out;
 }
 
+// The installed package folder of each agent, for `node .../claude-code/cli.js mcp serve`.
+const AGENT_SCRIPT = { claude: /(^|\/)@anthropic-ai\/claude-code\//i, codex: /(^|\/)@openai\/codex\//i };
+
 // Coding agents that can run as an MCP server and then expose their own
 // shell and file tools: `claude mcp serve`, `codex mcp-server`.
+
 function agentServer(base, args, pkgs) {
   let agent = ['claude', 'codex'].includes(base) ? base : null;
   let rest = args;
   const pkg = pkgs[0];
   if (!agent && pkg && /^@anthropic-ai\/claude-code$/i.test(pkg.name)) agent = 'claude';
   if (!agent && pkg && /^@openai\/codex$/i.test(pkg.name)) agent = 'codex';
+  if (!agent && !pkg) {
+    const script = scriptArgs(base, args).find((a) => !a.startsWith('-'));
+    const where = script?.replace(/\\/g, '/');
+    agent = where ? Object.keys(AGENT_SCRIPT).find((k) => AGENT_SCRIPT[k].test(where)) || null : null;
+    if (agent) rest = args.slice(args.indexOf(script) + 1);
+  }
   if (!agent) return null;
   if (pkg && !['claude', 'codex'].includes(base)) rest = args.slice(args.indexOf(pkg.spec) + 1);
   const words = rest.filter((a) => !a.startsWith('-'));
@@ -376,12 +475,21 @@ function checkShell(ctx) {
     out.push(finding('MCS010', ctx, 'The launch command pipes a downloaded script into a shell.', { evidence: shown }));
   }
   const pkgs = launchedPackages(s);
-  const name = [s.name, ...pkgs.map((p) => p.name)].join(' ');
+  const shellPkg = pkgs.find((p) => SHELL_PACKAGES.test(p.name));
   const agent = agentServer(base, args, pkgs);
-  if (SHELL_PACKAGES.test(name) || (pkgs.length === 0 && /\b(shell|terminal)\b/i.test(s.name))) {
-    out.push(finding('MCS007', ctx, `"${maskText(pkgs[0]?.name || s.name)}" exposes shell / command execution tools.`, { evidence: maskText(pkgs[0]?.spec || s.name), jsonPath: pkgs[0] ? argPath(s, pkgs[0].spec) : s.jsonPath }));
+  // The server name is a label the user picked, so a match on it alone is a weaker signal.
+  const label = String(s.name ?? '');
+  const nameHint = !shellPkg && !agent && (SHELL_PACKAGES.exec(label) || (pkgs.length === 0 && /\b(shell|terminal)\b/i.exec(label)));
+  if (shellPkg) {
+    out.push(finding('MCS007', ctx, `"${maskText(shellPkg.name)}" exposes shell / command execution tools.`, { evidence: maskText(shellPkg.spec), jsonPath: argPath(s, shellPkg.spec) }));
   } else if (agent) {
     out.push(finding('MCS007', ctx, agent, { evidence: shown, jsonPath: s.command ? `${s.jsonPath}.command` : s.jsonPath }));
+  } else if (nameHint) {
+    const urls = s.command ? [] : serverUrls(s);
+    const where = urls.length ? `remote server at ${hostOf(urls[0][0])}` : 'server';
+    out.push(finding('MCS007', ctx,
+      `The ${where} is named "${maskText(label)}", and "${nameHint[0]}" in the name suggests shell or command execution tools. Only the name matched; check which tools it offers.`,
+      { severity: 'medium', evidence: maskText(label), jsonPath: s.jsonPath }));
   } else if (['bash', 'sh', 'zsh', 'powershell', 'pwsh'].includes(base) && args.some((a) => /^(-c|-command|-Command)$/i.test(a))) {
     // Inline shell script as the launcher is worth a look, but it is not a shell tool by itself.
     out.push(finding('MCS007', ctx, 'Server is launched through an inline shell script, which hides what actually runs.', { severity: 'low', evidence: shown }));
@@ -394,9 +502,9 @@ function checkFilesystem(ctx) {
   const out = [];
   const pkgs = launchedPackages(s);
   const { base, args } = effectiveCommand(s);
-  // For a server run from a local build (node .../filesystem/dist/index.js),
-  // the script itself is not an allowed directory.
-  const scripts = pkgs.length ? [] : scriptArgs(base, args);
+  // For a server run from a local build (node .../filesystem/dist/index.js or
+  // npx tsx .../filesystem/index.ts), the script itself is not an allowed directory.
+  const scripts = serverScripts(s);
   const isFs = FS_PACKAGES.test([s.name, ...pkgs.map((p) => p.name)].join(' '))
     || /^filesystem$/i.test(s.name)
     || scripts.some((a) => FS_SCRIPT.test(a.replace(/\\/g, '/')));
@@ -457,11 +565,11 @@ const TEMP_DIR = /^(\/tmp|\/var\/tmp|\/private\/tmp|\/dev\/shm)(\/|$)|\/Download
 // databases, filesystem roots and container mounts are data, not code.
 function checkLocation(ctx) {
   const s = ctx.server;
-  const { cmd, base, args } = effectiveCommand(s);
+  const { cmd } = effectiveCommand(s);
   const candidates = [
     [cmd, s.command === cmd ? `${s.jsonPath}.command` : null],
-    [s.cwd, `${s.jsonPath}.cwd`],
-    ...scriptArgs(base, args).map((a) => [a, null]),
+    [textOf(s.cwd), `${s.jsonPath}.cwd`],
+    ...serverScripts(s).map((a) => [a, null]),
     ...launchedPackages(s).filter((p) => p.kind === 'local').map((p) => [p.spec, null]),
   ].filter(([c]) => c);
   const hit = candidates.find(([c]) => TEMP_DIR.test(String(c).replace(/\\/g, '/')));
@@ -474,13 +582,56 @@ export const SERVER_CHECKS = [checkSecrets, checkUrl, checkPackages, checkShell,
 
 // ---------------- File-level checks ----------------
 
+// Characters that only serve to hide or reorder text: bidirectional
+// embeddings, overrides and isolates, invisible math operators, a byte order
+// mark inside the text, and tag characters outside a flag emoji.
+const isHidingCode = (c) => (c >= 0x202A && c <= 0x202E) || (c >= 0x2061 && c <= 0x2064) || (c >= 0x2066 && c <= 0x2069) || c === 0xFEFF || (c >= 0xE0000 && c <= 0xE007F);
+// Every code point INVISIBLE matches.
+const isInvisibleCode = (c) => c === 0xAD || c === 0x180E || (c >= 0x200B && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) || (c >= 0x2060 && c <= 0x2064)
+  || (c >= 0x2066 && c <= 0x2069) || c === 0xFEFF || (c >= 0xE0000 && c <= 0xE007F);
+const isAsciiVisible = (c) => c >= 0x21 && c <= 0x7E;
+// Joiners that build emoji (a family, a profession with a skin tone) and the tag sequence of a subdivision flag.
+const FILE_EMOJI_JOINS = /(?<=[\p{Extended_Pictographic}\p{Emoji_Modifier}]\uFE0F?)\u200D(?=\p{Extended_Pictographic})|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
+
+/**
+ * The invisible characters in config text that can hide something, as
+ * { index, code } in the text without a leading byte order mark. Zero-width
+ * characters, soft hyphens and direction marks are part of ordinary writing
+ * in Persian, Arabic, Hebrew and Indic scripts and in emoji, so they count
+ * only inside a token of visible ASCII (a key, command, argument or URL) or
+ * as a run of two or more. Bidirectional controls and tag characters always count.
+ * @returns {{index: number, code: number}[]}
+ */
+export function hiddenCharacters(text) {
+  const body = String(text ?? '').replace(/^\uFEFF/, '');
+  const clean = body.replace(FILE_EMOJI_JOINS, (m) => ' '.repeat(m.length));
+  // The code point that ends just before i (-1 at the start).
+  const before = (i) => {
+    if (i <= 0) return -1;
+    const c = clean.charCodeAt(i - 1);
+    return c >= 0xDC00 && c <= 0xDFFF && i >= 2 ? clean.codePointAt(i - 2) : c;
+  };
+  const out = [];
+  const re = new RegExp(INVISIBLE.source, 'gu');
+  for (let m = re.exec(clean); m; m = re.exec(clean)) {
+    const code = m[0].codePointAt(0);
+    const end = m.index + m[0].length;
+    const prev = before(m.index);
+    const next = end < clean.length ? clean.codePointAt(end) : -1;
+    const run = isInvisibleCode(prev) || isInvisibleCode(next);
+    const inToken = isAsciiVisible(prev) && isAsciiVisible(next);
+    if (isHidingCode(code) || run || inToken) out.push({ index: m.index, code });
+  }
+  return out;
+}
+
 function checkFileUnicode(ctx) {
-  const t = ctx.config.text || '';
+  const t = typeof ctx.config.text === 'string' ? ctx.config.text : '';
   const body = t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
-  const hits = [...body.matchAll(INVISIBLE)];
+  const hits = hiddenCharacters(body);
   if (!hits.length) return [];
   const line = body.slice(0, hits[0].index).split('\n').length;
-  const codes = [...new Set(hits.map((h) => `U+${h[0].codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`))];
+  const codes = [...new Set(hits.map((h) => `U+${h.code.toString(16).toUpperCase().padStart(4, '0')}`))];
   const f = finding('MCS015', ctx, `${hits.length} invisible character(s) found, first on line ${line}.`, { evidence: codes.join(', ') });
   f.line = line; // there is no JSON path to look the line up from
   return [f];
@@ -869,22 +1020,37 @@ export function checkTools(toolSets, serverByName = {}) {
 
 // ---------------- Runner ----------------
 
+// Records a check that failed on unexpected input as an error of its config
+// file, so the reports say the scan is incomplete and the other servers and
+// files are still checked.
+function checkFailed(config, what, e) {
+  const msg = `Could not check ${what}: ${maskText(String(e?.message ?? e).slice(0, 200))}`.replace(/[\x00-\x1f\x7f]/g, ' ');
+  if (process.env.MCPSAFE_DEBUG) console.error(e);
+  if (config.error?.includes(msg)) return;
+  config.error = config.error ? `${config.error}; ${msg}` : msg;
+}
+
+function safely(config, what, fn) {
+  try { return fn() || []; } catch (e) { checkFailed(config, what, e); return []; }
+}
+
 export function runChecks(configs) {
   const findings = [];
   for (const config of configs) {
     const fileFindings = [];
-    for (const server of config.servers) {
+    for (const server of config.servers || []) {
       const ctx = { server, config };
+      const name = String(server?.name ?? '').slice(0, 80);
       for (const check of SERVER_CHECKS) {
-        for (const f of check(ctx)) {
+        for (const f of safely(config, `server "${name}"`, () => check(ctx))) {
           if (server.disabled && f.id !== 'MCS001') { f.severity = downgrade(f.severity); f.message += ' (server is disabled)'; }
           fileFindings.push(f);
         }
       }
     }
     const ctx = { config };
-    fileFindings.push(...checkFileUnicode(ctx), ...checkClientSettings(ctx));
-    fileFindings.push(...checkFilePermissions(ctx, fileFindings));
+    fileFindings.push(...safely(config, 'the file', () => checkFileUnicode(ctx)), ...safely(config, 'the client settings', () => checkClientSettings(ctx)));
+    fileFindings.push(...safely(config, 'the file permissions', () => checkFilePermissions(ctx, fileFindings)));
     findings.push(...fileFindings);
   }
   return findings;

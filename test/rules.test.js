@@ -116,9 +116,10 @@ test('MCS013: real packages from other registries are not typosquats', () => {
     ['@modelcontextprotocoi/server-github', '@modelcontextprotocol/server-github']]) {
     assert.equal(typosquatOf(n), p, n);
   }
-  // Only names from the same registry are compared.
+  // npm and PyPI names are compared with each other (PyPI server names get squatted on npm); image names only with images.
   assert.equal(typosquatOf('mcp-server-fecth', 'pypi'), 'mcp-server-fetch');
-  assert.equal(typosquatOf('mcp-server-fecth', 'npm'), null);
+  assert.equal(typosquatOf('mcp-server-fecth', 'npm'), 'mcp-server-fetch');
+  assert.equal(typosquatOf('mcp-server-fecth', 'docker'), null);
   assert.ok(!has(run({ a: { command: 'npx', args: ['-y', 'mcp-server-gsc@0.3.0'] }, b: { command: 'uvx', args: ['mcp-server-sqlite3==0.1.0'] } }), 'MCS013'));
   assert.ok(has(run({ a: { command: 'uvx', args: ['mcp-server-fecth==1.0.0'] } }), 'MCS013'));
 });
