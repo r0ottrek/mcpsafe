@@ -1,14 +1,16 @@
 // Detects credentials pasted directly into config values.
 
 // Loopback hosts and the default passwords that local database containers and
-// tools ship with (the Supabase CLI uses postgres:postgres@127.0.0.1:54322).
-// A URL with one of these on a loopback host is a local dev default that grants
-// nothing beyond the machine, so it is not reported. The same password on any
-// other host, or any other password on loopback, still is.
+// tools ship with (the Supabase CLI uses postgres:postgres@127.0.0.1:54322,
+// the postgres image's Docker Hub example uses mysecretpassword). A password
+// that repeats the user name (app:app, root:root) is the same kind of local
+// default. A URL with one of these on a loopback host grants nothing beyond
+// the machine, so it is not reported. The same password on any other host, or
+// any other password on loopback, still is.
 const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1|0\.0\.0\.0|host\.docker\.internal)$/i;
 const DEV_DB_PASSWORDS = new Set([
   'postgres', 'password', 'pass', 'root', 'example', 'secret', 'admin', 'dev', 'test', 'mysql', 'mariadb',
-  'redis', 'redispw', 'mongo', 'mongodb', 'guest', 'clickhouse',
+  'redis', 'redispw', 'mongo', 'mongodb', 'guest', 'clickhouse', 'mysecretpassword',
 ]);
 
 // The host of one entry of a host list: "localhost:5432" -> "localhost", "[::1]:5432" -> "[::1]".
@@ -18,10 +20,17 @@ function hostPart(h) {
   return c < 0 ? h : h.slice(0, c);
 }
 
-function isLocalDevDb(m) {
+// The user name of a scheme://user:password@ match whose password is `pw`.
+function userOf(m, pw) {
+  const at = m[0].indexOf('://');
+  return m[0].slice(at + 3, m[0].length - pw.length - 2);
+}
+
+function isLocalDevDb(m, pw = m[1]) {
   // locate.js calls `valid` from String.replace, where the match has no index.
   if (typeof m.index !== 'number' || typeof m.input !== 'string') return false;
-  if (!DEV_DB_PASSWORDS.has(m[1].toLowerCase())) return false;
+  const p = pw.toLowerCase();
+  if (!DEV_DB_PASSWORDS.has(p) && p !== userOf(m, pw).toLowerCase()) return false;
   // The rest of the URL (bounded, so many matches in one text stay linear).
   const after = m.input.slice(m.index + m[0].length, m.index + m[0].length + 1024);
   const end = after.search(/[\s"'<>`]/);
@@ -39,6 +48,13 @@ function isLocalDevDb(m) {
 // `group` names the capture group that holds the secret itself (default: the
 // whole match). `valid` rejects matches that only look like the pattern.
 const DB_URL = /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver|clickhouse)(?:\+\w{1,32})?:\/\/[^:\s/@]{0,256}:([^@\s?#]{3,256})@/; // bounded, so it runs in linear time
+// A password in the user info of any other URL: https://user:password@host,
+// git+https://user:token@host, wss://, ftp://. The password stops at '/', so
+// "host:8080/path@x" is a port and a path, not a password. Bounded like DB_URL.
+const URL_USERINFO = /\b(?:https?|wss?|ftps?|sftp|ssh|git|svn|smb|ldaps?)(?:\+\w{1,32})?:\/\/[^:\s/@?#]{0,256}:([^@\s/?#]{1,256})@/;
+// Passwords that only name what goes there (https://user:password@host), and
+// the fixed password GitHub uses when the token is the user name.
+const TEMPLATE_PASSWORDS = new Set(['password', 'passwd', 'pass', 'pwd', 'pw', 'secret', 'token', 'apikey', 'api_key', 'api-key', 'key', 'x-oauth-basic']);
 
 export const SECRET_PATTERNS = [
   { name: 'Anthropic API key', re: /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}/ },
@@ -59,6 +75,7 @@ export const SECRET_PATTERNS = [
   { name: 'Private key', re: /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/ },
   // A password may contain '/', but "host:5432/db" before a later '@' is a port and a path.
   { name: 'Database URL with password', re: DB_URL, group: 1, valid: (m) => !/^\d+(?:\/|$)/.test(m[1]) && !isPlaceholder(m[1]) && !isLocalDevDb(m) },
+  { name: 'Password in URL', re: URL_USERINFO, group: 1, valid: (m) => !/^\d+$/.test(m[1]) && !TEMPLATE_PASSWORDS.has(m[1].toLowerCase()) && !isPlaceholder(m[1]) && !isLocalDevDb(m) },
 ];
 
 const SECRET_KEY_NAME = /(api[_-]?key|apikey|token(?!iz)|secret|passw(or)?d|passwd|pwd|passphrase|credential|private[_-]?key|access[_-]?key|bearer)/i;
@@ -304,6 +321,52 @@ export function mask(v) {
   return `${s.slice(0, 4)}${'•'.repeat(8)}`;
 }
 
+// Shannon entropy per character is at most log2(16) = 4 for hex, so random
+// hex of 24 or more characters often falls below the cutoff for other
+// alphabets. It gets a cutoff that fits its alphabet.
+function randomEnough(c) {
+  if (c.length >= 24 && /^[0-9a-f]+$/i.test(c)) return /\d/.test(c) && /[a-f]/i.test(c) && entropy(c) >= 2.7;
+  return entropy(c) >= 3.2;
+}
+
+// A match too simple to count as a secret when the value around it is template text.
+// "Password1", "changeme!", "ADMIN2024": one word with a few digits or a symbol after it.
+function weakSecret(x) {
+  return x.length < 10 || entropy(x) < 3 || /^(?:[A-Z]?[a-z]+|[A-Z]+)\d{0,4}[^A-Za-z0-9]?$/.test(x);
+}
+
+const MAX_JSON_DEPTH = 3;
+const MAX_JSON_LENGTH = 65536;
+const MAX_JSON_STRINGS = 1000;
+
+// The findSecrets() results of every string in a JSON object or array, each
+// judged under the key it belongs to, or null when `s` is not one.
+function jsonSecrets(s, keyName, depth) {
+  const t = s.trim();
+  if (t.length < 7 || t.length > MAX_JSON_LENGTH || !((t[0] === '{' && t.endsWith('}')) || (t[0] === '[' && t.endsWith(']')))) return null;
+  let doc;
+  try { doc = JSON.parse(t); } catch { return null; }
+  if (!doc || typeof doc !== 'object') return null;
+  const out = [];
+  const seen = new Set();
+  let budget = MAX_JSON_STRINGS;
+  const walk = (v, key, level) => {
+    if (budget <= 0 || level > 32) return;
+    if (typeof v === 'string' || typeof v === 'number') {
+      budget--;
+      for (const d of findSecrets(String(v), key, depth + 1)) {
+        if (!seen.has(d.secret)) { seen.add(d.secret); out.push(d); }
+      }
+    } else if (Array.isArray(v)) {
+      for (const x of v) walk(x, key, level + 1);
+    } else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) walk(x, k, level + 1);
+    }
+  };
+  walk(doc, keyName, 0);
+  return out;
+}
+
 const globals = new Map();
 function globalRe(re) {
   if (!globals.has(re)) globals.set(re, new RegExp(re.source, `${re.flags}g`));
@@ -317,15 +380,21 @@ function globalRe(re) {
  * @param {string} [keyName] the env var / header / arg name the value belongs to
  * @returns {{type: string, confidence: 'high'|'medium', match: string, secret: string}[]}
  */
-export function findSecrets(value, keyName = '') {
+export function findSecrets(value, keyName = '', depth = 0) {
   if (value == null) return [];
   const raw = String(value);
   const refs = raw.includes('${') ? parseRefs(raw) : null;
   const s = refs ? refs.text : raw;
-  // A single-word value is judged as a whole. A value with spaces (a command
-  // line, a header) can hold a real token next to template text, so each
-  // match is judged on its own instead.
-  if (placeholderText(s) && (!s.trim() || !/\s/.test(s.trim()))) return [];
+  if (!s.trim()) return [];
+  // A JSON object or array written into one string ({"apiKey": "..."}): each
+  // member is judged under its own key.
+  const json = depth < MAX_JSON_DEPTH ? jsonSecrets(s, keyName, depth) : null;
+  if (json) return json;
+  // A single-word value that is template text as a whole ("your-token-here",
+  // ".../sample_mflix") still holds a real secret when the part that a
+  // pattern points at is random, so known formats are judged on that part.
+  // Only a weak match (a dictionary password) is dropped because of the rest.
+  const template = placeholderText(s) && !/\s/.test(s.trim());
   const out = [];
   for (const p of SECRET_PATTERNS) {
     if (p.name === 'Private key') {
@@ -339,11 +408,12 @@ export function findSecrets(value, keyName = '') {
     for (const m of s.matchAll(globalRe(p.re))) {
       if (p.valid && !p.valid(m)) continue;
       const secret = m[p.group || 0];
-      if (placeholderText(m[0])) continue;
+      if (placeholderText(secret) || (template && weakSecret(secret))) continue;
       out.push({ type: p.name, confidence: 'high', match: m[0], secret });
     }
   }
   if (out.length) return out;
+  if (template) return [];
   // Authorization: Bearer <literal>
   const bearer = s.trim().match(/^(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{16,})$/i);
   if (bearer && !placeholderText(bearer[1])) return [{ type: 'Authorization header credential', confidence: 'high', match: bearer[1], secret: bearer[1] }];
@@ -353,7 +423,7 @@ export function findSecrets(value, keyName = '') {
   if (!keyLooksSecret(keyName)) return out;
   const candidates = refs ? refs.defaults : [s];
   for (const c of candidates) {
-    if (c.length >= 12 && !/\s/.test(c) && entropy(c) >= 3.2 && !placeholderText(c) && !looksLikeSetting(c, keyName)) {
+    if (c.length >= 12 && !/\s/.test(c) && randomEnough(c) && !placeholderText(c) && !looksLikeSetting(c, keyName)) {
       out.push({ type: `Credential in ${keyName}`, confidence: 'medium', match: c, secret: c });
     }
   }
@@ -368,11 +438,15 @@ const ARG_EQ = /^--?([\w-]+)=(.+)$/; // --api-key=value
 const ARG_FLAG = /^--?[\w-]+$/; // --token (its value is the next argument)
 const ARG_HEADER = /^([A-Za-z][\w-]*)\s*:\s*(\S.*)$/; // "X-Api-Key: value", "X-Api-Key : value"
 const ARG_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+// NAME=value: an environment assignment, bare (env API_KEY=v node ..., or a
+// shell script) or as the value of a flag (docker -e API_KEY=v, --env=API_KEY=v).
+const ARG_ASSIGN = /^([A-Za-z_][A-Za-z0-9_]{0,127})=(\S.*)$/s;
 
 /**
  * The values MCS001 judges in one argument, each with the key it is judged
  * under and its offset in the argument: first the argument itself (or the part
- * after "--key="), then, when that is a "Name: value" header, the header value.
+ * after "--key="), then, when that is a NAME=value assignment, the value under
+ * NAME, and when it is a "Name: value" header, the header value.
  * @param {string} arg
  * @param {string} [prev] the argument before it
  * @returns {{key: string, value: string, offset: number}[]}
@@ -384,6 +458,8 @@ export function argValues(arg, prev = '') {
   const main = eq ? { key: eq[1], value: eq[2], offset: a.length - eq[2].length } : { key: prevFlag, value: a, offset: 0 };
   const out = [main];
   if (!ARG_URL.test(main.value)) {
+    const v = ARG_ASSIGN.exec(main.value);
+    if (v) out.push({ key: v[1], value: v[2], offset: main.offset + v[1].length + 1 });
     const h = ARG_HEADER.exec(main.value);
     if (h) out.push({ key: h[1], value: h[2].trim(), offset: main.offset + main.value.length - h[2].length });
   }
@@ -392,8 +468,11 @@ export function argValues(arg, prev = '') {
 
 /** The first credential MCS001 reports in one argument, or null. */
 export function detectInArg(arg, prev = '') {
-  const [main, header] = argValues(arg, prev);
-  return detectSecret(main.value, main.key) || (header ? detectSecret(header.value, header.key) : null);
+  for (const { key, value } of argValues(arg, prev)) {
+    const d = detectSecret(value, key);
+    if (d) return d;
+  }
+  return null;
 }
 
 /**

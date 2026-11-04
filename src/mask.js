@@ -40,7 +40,9 @@ const FLAG = /^--?([\w.-]+)$/; // --token, -k, --2fa-secret
 const HEADER_NAME = /(?:^|[=:])([A-Za-z][\w-]*):$/; // "x-api-key:" or "--header=x-api-key:"
 const HEADER_WORD = /^[A-Za-z][\w-]*$/; // "x-api-key" in "x-api-key : value"
 const AUTH = /(?:^|[=:])(Bearer|Basic|Token)$/i; // "Bearer", "Authorization:Bearer"
-const KV = /^-{0,2}([\w.-]+)([=:])/; // --api-key=v, API_KEY=v, X-Api-Key:v
+// --api-key=v, API_KEY=v, X-Api-Key:v, and quoted keys of JSON text: "apiKey":"v", \"apiKey\":\"v\".
+const KV = /^-{0,2}(?:\\?["'])?([\w.-]+)(?:\\?["'])?([=:])/;
+const QUOTE = new Set(['"', "'", '\\']);
 const AUTH_VALUE = /^[A-Za-z0-9._~+/=-]{16,}$/;
 const LEAD = new Set(['"', "'", '`', '(', '[', '{', '<']);
 const TRAIL = new Set(['"', "'", '`', ')', ']', '}', '>', ',', ';', '.']);
@@ -99,8 +101,11 @@ function judgeKV(s, a, b, ranges, depth = 0) {
   let va = a + m[0].length;
   let vb = b;
   if (va >= vb) return;
-  if (m[2] === ':' && (s[va] === '/' || s[va] === '\\')) return; // https://..., C:\...
-  if ((s[va] === '"' || s[va] === "'")) { if (s[vb - 1] === s[va] && vb - 1 > va) vb--; va++; }
+  if (m[2] === ':' && (s[va] === '/' || (s[va] === '\\' && s[va + 1] !== '"' && s[va + 1] !== "'"))) return; // https://..., C:\...
+  // Quotes around the value, escaped or not: "v", 'v', \"v\".
+  while (va < vb && QUOTE.has(s[va])) va++;
+  while (vb > va && QUOTE.has(s[vb - 1])) vb--;
+  if (va >= vb) return;
   judge(s, va, vb, m[1], ranges);
   if (depth < 2) judgeKV(s, va, vb, ranges, depth + 1);
 }

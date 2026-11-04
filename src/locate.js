@@ -179,7 +179,7 @@ function analyze(text) {
       if (secret.length >= 8) { all.add(secret); all.add(jsonEsc(secret)); }
     }
   });
-  return { strings, found, index: secretIndex(all) };
+  return { strings, found, index: secretIndex(all), all: [...all] };
 }
 const analyses = new Map();
 
@@ -190,6 +190,12 @@ const analyses = new Map();
 export function configSecrets(text) {
   if (!text) return null;
   return cached(analyses, text, analyze).index;
+}
+
+/** Every secret found in a config's text (what configSecrets() indexes), as a list. */
+export function configSecretList(text) {
+  if (!text || typeof text !== 'string') return [];
+  return cached(analyses, text, analyze).all;
 }
 
 // Only punctuation and white space between two strings: nothing to mask.

@@ -2,9 +2,11 @@
 import os from 'node:os';
 import path from 'node:path';
 import { RULES, SEVERITIES } from './rules.js';
-import { detectInArg, detectSecret, isPlaceholder, mask } from './secrets.js';
-import { isCredentialParam, maskArgv, maskString } from './mask.js';
-import { effectiveCommand, launchedPackages, parseDockerRun, argsAfterPackage, splitCommandLine } from './packages.js';
+import { detectInArg, detectSecret, entropy, findSecrets, isPlaceholder, looksLikeSetting, mask } from './secrets.js';
+import { isCredentialParam, maskArgv, maskKnown, maskString, secretIndex } from './mask.js';
+import { baseCommand, effectiveCommand, launchedPackages, parseDockerRun, argsAfterPackage, splitCommandLine } from './packages.js';
+import { configSecretList } from './locate.js';
+import { jsoncComments } from './jsonc.js';
 
 const INVISIBLE = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu;
 
@@ -293,6 +295,24 @@ function secretsInArgs(list) {
   return hits;
 }
 
+// Shells whose -c argument is a script, and the flags that introduce one
+// (-c, -lc, -ec, -Command, cmd's /c).
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'powershell', 'pwsh', 'cmd']);
+const SCRIPT_FLAG = /^(?:-[a-z]{0,3}c|-command|\/c)$/i;
+
+// The inline scripts in an argument list that starts with `command`: the
+// argument after -c when the program is a shell. Each is split into words the
+// way the shell would, so `API_TOKEN=x node server.js` and
+// `export GITHUB_TOKEN=x && npx ...` are read like any other command line.
+function shellScripts(command, list) {
+  if (!SHELLS.has(baseCommand(command))) return [];
+  const out = [];
+  for (let i = 1; i < list.length; i++) {
+    if (SCRIPT_FLAG.test(String(list[i - 1])) && /\s/.test(String(list[i]).trim())) out.push([i, splitCommandLine(String(list[i]))]);
+  }
+  return out;
+}
+
 // ---------------- Server-level checks ----------------
 
 function checkSecrets(ctx) {
@@ -319,13 +339,24 @@ function checkSecrets(ctx) {
   // --api-key=xxx, --token xxx, --header "Authorization: Bearer xxx"
   const seen = new Set();
   for (const [i, det] of secretsInArgs(s.args)) { seen.add(det.match); report(`args[${i}]`, det, `${s.jsonPath}.args[${i}]`); }
-  // A command line written into `command`, also when more arguments follow in `args`.
+  const once = (det, where, jsonPath) => {
+    if (seen.has(det.match)) return;
+    seen.add(det.match);
+    report(where, det, jsonPath);
+  };
+  // sh -c 'API_TOKEN=x node server.js'
   const command = textOf(s.command);
+  const args = Array.isArray(s.args) ? s.args.map(String) : [];
+  for (const [i, words] of shellScripts(command, [command, ...args])) {
+    for (const [, det] of secretsInArgs(words)) once(det, `args[${i - 1}]`, `${s.jsonPath}.args[${i - 1}]`);
+  }
+  // A command line written into `command`, also when more arguments follow in `args`.
   if (command && /\s/.test(command.trim())) {
-    for (const [, det] of secretsInArgs(splitCommandLine(command))) {
-      if (seen.has(det.match)) continue;
-      seen.add(det.match);
-      report('command', det, `${s.jsonPath}.command`);
+    const words = splitCommandLine(command);
+    for (const [, det] of secretsInArgs(words)) once(det, 'command', `${s.jsonPath}.command`);
+    for (const [i, inner] of shellScripts(words[0], [...words, ...args])) {
+      const where = i < words.length ? 'command' : `args[${i - words.length}]`;
+      for (const [, det] of secretsInArgs(inner)) once(det, where, `${s.jsonPath}.${where}`);
     }
   }
   const url = textOf(s.url);
@@ -609,6 +640,53 @@ function checkFileUnicode(ctx) {
   const f = finding('MCS015', ctx, `${hits.length} invisible character(s) found, first on line ${line}.`, { evidence: codes.join(', ') });
   f.line = line; // there is no JSON path to look the line up from
   return [f];
+}
+
+// "key": "value" pairs in a commented-out piece of JSON. Bounded, so it runs in linear time.
+const COMMENT_PAIR = /"([\w.-]{1,128})"[ \t]{0,8}:[ \t]{0,8}"([^"\\\n]{1,1024})"/g;
+// Quotes and punctuation around a word of a comment, trimmed by hand (a
+// pattern anchored at the end would be quadratic on a long run of them).
+const EDGE = new Set(['"', "'", '`', ',', ';', '{', '}', '[', ']', '(', ')']);
+function trimEdges(w) {
+  let a = 0;
+  let b = w.length;
+  while (a < b && EDGE.has(w[a])) a++;
+  while (b > a && EDGE.has(w[b - 1])) b--;
+  return w.slice(a, b);
+}
+
+// MCS001 for credentials in comments. A JSONC config is committed with its
+// comments, so a commented-out server or an old key is as exposed as a value.
+function checkCommentSecrets(ctx) {
+  const { config } = ctx;
+  const text = typeof config.text === 'string' ? config.text : '';
+  if (!text.includes('/')) return [];
+  const project = config.source?.scope === 'project';
+  const out = [];
+  const seen = new Set();
+  for (const c of jsoncComments(text)) {
+    // No credential MCS001 reports is shorter than this.
+    if (c.text.trim().length < 8) continue;
+    const dets = [...findSecrets(c.text)];
+    // Words of the comment, read like command line arguments: API_KEY=..., --token ...
+    const words = c.text.split(/\s+/).map(trimEdges).filter(Boolean);
+    for (const [, d] of secretsInArgs(words)) dets.push(d);
+    for (const m of c.text.matchAll(COMMENT_PAIR)) dets.push(...findSecrets(m[2], m[1]));
+    for (const det of dets) {
+      if (seen.has(det.secret)) continue;
+      seen.add(det.secret);
+      const at = c.text.indexOf(det.secret);
+      const line = c.line + (at > 0 ? c.text.slice(0, at).split('\n').length - 1 : 0);
+      let severity = det.confidence === 'high' ? 'high' : 'medium';
+      if (project) severity = 'critical';
+      const f = finding('MCS001', ctx,
+        `${det.type} found in a comment on line ${line}${project ? '. This is a project file that is likely committed to git' : ''}.`,
+        { severity, evidence: mask(det.match) });
+      f.line = line;
+      out.push(f);
+    }
+  }
+  return out;
 }
 
 function checkFilePermissions(ctx, serverFindings) {
@@ -1210,9 +1288,27 @@ function sentenceAround(text, start, end) {
   return text.slice(a, Math.min(text.length, b + 1)).trim();
 }
 
-/** @param {{server: string, tools: {name: string, description?: string, inputSchema?: any}[]}[]} toolSets */
-export function checkTools(toolSets, serverByName = {}) {
+// Values a live server was started with (its env, its arguments) that look
+// random enough to be credentials, whatever their key is called: a server
+// that echoes its own key into a tool description must not get it printed.
+const randomValue = (v) => typeof v === 'string' && v.length >= 12 && !/\s/.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v)
+  && entropy(v) >= 3 && !isPlaceholder(v) && !looksLikeSetting(v, '');
+
+/**
+ * @param {{server: string, tools: {name: string, description?: string, inputSchema?: any}[], secrets?: string[]}[]} toolSets
+ * @param {object} [serverByName]
+ * @param {object} [known] a secretIndex() of the secrets in the scanned configs
+ */
+export function checkTools(toolSets, serverByName = {}, known = null) {
   const out = [];
+  // Tool text is printed as the model sees it, but with credentials masked:
+  // known formats, credential flags and query values, every secret of the
+  // scanned configs and the values the server itself was started with.
+  const shown = (text, own) => {
+    if (text == null) return text;
+    const t = maskString(String(text), { known });
+    return own ? maskKnown(t, own) : t;
+  };
   const owner = new Map();
   const serverOf = new Map();
   // A live server can send anything as a name; only real strings take part in name matching.
@@ -1222,6 +1318,8 @@ export function checkTools(toolSets, serverByName = {}) {
   for (const set of toolSets) {
     const srv = set.srv || serverByName[set.server] || { name: set.server, client: null, file: set.file || null, jsonPath: null };
     const ctx = { server: srv };
+    const ownSecrets = secretIndex((set.secrets || []).filter(randomValue));
+    const show = (text) => shown(text, ownSecrets);
     const own = new Set(set.tools.filter(named).map((x) => x.name));
     for (const t of set.tools) {
       if (!t || typeof t !== 'object') continue;
@@ -1230,7 +1328,7 @@ export function checkTools(toolSets, serverByName = {}) {
       const segments = toolTexts(t);
       const { full, hits, severity, reasons } = analyzeSegments(segments, segments.truncated);
       if (severity) {
-        const f = finding('MCS016', ctx, `Tool "${name}": ${reasons.join(', ')}.`, { severity, evidence: evidenceAround(full, hits), jsonPath: `tools.${name}` });
+        const f = finding('MCS016', ctx, show(`Tool "${name}": ${reasons.join(', ')}.`), { severity, evidence: show(evidenceAround(full, hits)), jsonPath: `tools.${name}` });
         if (severity !== 'critical') f.fix = 'Read the description and confirm the flagged text is legitimate before trusting this server. If it gives the model instructions that have nothing to do with the tool, remove the server and report it to the maintainer.';
         if (reasons.length === 1 && segments.truncated) f.fix = 'This tool\'s description and schema are larger or more deeply nested than mcpsafe reads, so the rest was not checked. Ordinary tools are far smaller. Review the full tool definition by hand before trusting this server.';
         out.push(f);
@@ -1249,10 +1347,10 @@ export function checkTools(toolSets, serverByName = {}) {
         refers = true;
         const sentence = sentenceAround(prose, m.index, m.index + m[0].length);
         const high = urgent || IMPERATIVE.test(sentence);
-        out.push(finding('MCS017', ctx, high
+        out.push(finding('MCS017', ctx, show(high
           ? `Tool "${t.name}" gives instructions about "${other}", a tool from server "${otherServer}".`
-          : `Tool "${t.name}" mentions "${other}", a tool from server "${otherServer}".`,
-        { severity: high ? 'high' : 'medium', evidence: sentence.slice(0, 400) }));
+          : `Tool "${t.name}" mentions "${other}", a tool from server "${otherServer}".`),
+        { severity: high ? 'high' : 'medium', evidence: show(sentence).slice(0, 400) }));
       }
 
       // Same tool name on several servers. Most clients prefix tools with the server name,
@@ -1300,10 +1398,31 @@ export function runChecks(configs) {
     }
     const ctx = { config };
     fileFindings.push(...safely(config, 'the file', () => checkFileUnicode(ctx)), ...safely(config, 'the client settings', () => checkClientSettings(ctx)));
+    fileFindings.push(...safely(config, 'the comments', () => checkCommentSecrets(ctx)));
     fileFindings.push(...safely(config, 'the file permissions', () => checkFilePermissions(ctx, fileFindings)));
     findings.push(...fileFindings);
   }
+  // A secret found anywhere in the scanned configs is hidden wherever another
+  // finding repeats it without the context that marks it (a bare argument
+  // inside sh -c, a version string), in every output format.
+  const known = knownSecrets(configs);
+  if (known) {
+    for (const f of findings) {
+      f.message = maskKnown(f.message, known);
+      if (typeof f.evidence === 'string') f.evidence = maskKnown(f.evidence, known);
+    }
+  }
   return findings;
+}
+
+/**
+ * Every secret found in the text of the given configs, as a secretIndex() for
+ * the `known` option of src/mask.js, or null when there is none.
+ */
+export function knownSecrets(configs) {
+  const all = new Set();
+  for (const c of configs || []) for (const x of configSecretList(c?.text)) all.add(x);
+  return secretIndex(all);
 }
 
 export function displayPath(p) {

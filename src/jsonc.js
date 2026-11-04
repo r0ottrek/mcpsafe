@@ -42,6 +42,49 @@ export function stripJsonc(text) {
   return out.join('');
 }
 
+/**
+ * The comments of a JSONC text, read with the same rules as stripJsonc():
+ * "//" up to the end of the line and "/* ... *\/" (an unclosed one runs to the
+ * end), never inside a string.
+ * @returns {{text: string, start: number, line: number}[]} each comment's text
+ *   (without its markers), its offset and its 1-based line
+ */
+export function jsoncComments(text) {
+  const out = [];
+  let line = 1;
+  let i = 0;
+  let inString = false;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i];
+    if (c === '\n') line++;
+    if (inString) {
+      if (c === '\\' && i + 1 < n) { if (text[i + 1] === '\n') line++; i += 2; continue; }
+      if (c === '"' || c === '\n') inString = false;
+      i++;
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '/') {
+      let e = i + 2;
+      while (e < n && text[e] !== '\n' && text[e] !== '\r') e++;
+      out.push({ text: text.slice(i + 2, e), start: i + 2, line });
+      i = e;
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end < 0 ? n : end;
+      out.push({ text: text.slice(i + 2, stop), start: i + 2, line });
+      for (let j = i + 2; j < stop; j++) if (text[j] === '\n') line++;
+      i = end < 0 ? n : end + 2;
+      continue;
+    }
+    if (c === '"') inString = true;
+    i++;
+  }
+  return out;
+}
+
 const NOT_VALID = ' is not valid JSON';
 
 // Newer Node versions quote up to about 20 characters of the text in the

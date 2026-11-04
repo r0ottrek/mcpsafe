@@ -617,10 +617,11 @@ function sseSession(server, prep) {
 
 // ---------------------------------------------------------------------------
 
-function cleanMessage(e, ctx) {
+function cleanMessage(e, ctx, withNames = true) {
   // Values from the environment and credentials from the config, plus
   // anything else that looks like a credential.
   let msg = maskString(e?.message || String(e), { known: secretIndex(ctx.secrets, 4) });
+  if (!withNames) return msg;
   // Names only, and left out when a name itself looks like a credential.
   const names = [...ctx.unresolved].filter((n) => maskString(n) === n);
   if (names.length) msg += ` (not set: ${names.join(', ')})`;
@@ -687,7 +688,10 @@ export async function listTools(server, timeoutMs = 20000) {
       seen.add(cursor);
     }
     if (warning) notes.push(warning);
-    if (notes.length) tools.warning = notes.join('; ');
+    if (notes.length) tools.warning = cleanMessage(notes.join('; '), ctx, false);
+    // The values the server was started with, so that a tool description
+    // that repeats one of them is masked in the reports.
+    Object.defineProperty(tools, 'secrets', { value: [...ctx.secrets], enumerable: false });
     return tools;
   };
   try {

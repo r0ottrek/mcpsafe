@@ -84,7 +84,7 @@ Where a rule gives a range, the severity depends on the finding, so check the co
 
 | ID | Severity | Finds |
 |---|---|---|
-| MCS001 | medium to critical | API keys, tokens, `Authorization` headers and database passwords in a config. High for a known token format, medium for a value that only looks like a secret, critical in a project file that is likely committed to git |
+| MCS001 | medium to critical | API keys, tokens, `Authorization` headers, database passwords and passwords in URLs (`https://user:password@host`) in a config: in `env`, headers, arguments (including `docker -e NAME=value`, `env NAME=value` and `sh -c` scripts), JSON written into a string value, and comments. High for a known token format, medium for a value that only looks like a secret, critical in a project file that is likely committed to git |
 | MCS002 | medium | A config holding secrets that other users on the machine can read |
 | MCS003 | medium | `npx`, `uvx` or `pipx` packages without an exact version |
 | MCS004 | medium | Docker images with no tag or `:latest` |
@@ -103,7 +103,7 @@ Where a rule gives a range, the severity depends on the finding, so check the co
 | MCS017 | low to high | Tool shadowing. Low for the same tool name on two servers, medium for a mention of another server's tool (or a shared name where one tool also looks suspicious), high when a tool gives instructions about another server's tool |
 | MCS018 | medium | Packages installed from a git branch or URL instead of a pinned release |
 
-MCS001 does not report values that only point at a secret (`${VAR}` references, environment variable names, file paths, AWS ARNs and other secret manager names), template placeholders copied from a README (`xoxb-your-bot-token`, `{{GITHUB_TOKEN}}`), or a database URL on localhost with a well-known default password such as `postgres:postgres@127.0.0.1`. That last exception applies only when every host in the URL is local, so a replica set or a `host=` parameter that reaches another machine is still reported.
+MCS001 does not report values that only point at a secret (`${VAR}` references, environment variable names, file paths, AWS ARNs and other secret manager names), template placeholders copied from a README (`xoxb-your-bot-token`, `{{GITHUB_TOKEN}}`), or a database URL on localhost with a well-known default password such as `postgres:postgres@127.0.0.1`, `mysecretpassword` from the postgres image's example, or a password that repeats the user name (`app:app@localhost`). That last exception applies only when every host in the URL is local, so a replica set or a `host=` parameter that reaches another machine is still reported.
 
 The reasoning and the fix for each rule are in [src/rules.js](src/rules.js). `mcpsafe --rules` lists them.
 

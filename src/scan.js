@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discover } from './discover.js';
 import { loadConfig } from './parse.js';
-import { runChecks, checkTools } from './checks.js';
+import { runChecks, checkTools, knownSecrets } from './checks.js';
+import { maskKnown } from './mask.js';
 import { listTools, mcpjsonDisabled } from './live.js';
 import { score, sortFindings } from './score.js';
 import { SEVERITIES } from './rules.js';
@@ -142,15 +143,20 @@ export async function scan(o = {}) {
       try {
         const tools = await listTools(s);
         // srv ties the tools to this exact server, not just to its name.
-        toolSets.push({ server: s.name, srv: s, tools, file: s.file });
+        toolSets.push({ server: s.name, srv: s, tools, file: s.file, secrets: tools.secrets || [] });
         if (tools.warning) liveErrors.push({ server: s.name, file: s.file, client: s.client, error: tools.warning });
       } catch (e) {
         liveErrors.push({ server: s.name, file: s.file, client: s.client, error: e.message });
       }
     }
   }
+  // Every secret of every scanned config: live errors and tool text are
+  // masked with all of them, since a value marked as a secret in one server
+  // can come back without that context from another.
+  const known = knownSecrets(configs);
+  for (const e of liveErrors) e.error = maskKnown(e.error, known);
   const byName = Object.fromEntries(allServers.map((s) => [s.name, s]));
-  findings.push(...checkTools(toolSets, byName));
+  findings.push(...checkTools(toolSets, byName, known));
 
   const ignore = new Set((o.ignore || []).map((x) => x.toUpperCase()));
   findings = sortFindings(findings.filter((f) => !ignore.has(f.id)));
