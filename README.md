@@ -75,13 +75,13 @@ The reasoning and the fix for each rule are in [src/rules.js](src/rules.js). `mc
 
 | Client | Files |
 |---|---|
-| Claude Desktop | `claude_desktop_config.json` in the app's config folder on macOS, Windows and Linux |
+| Claude Desktop | `claude_desktop_config.json` in the app's config folder on macOS, Windows and Linux, including the Microsoft Store install under `AppData\Local\Packages\Claude_*` |
 | Claude Code | `~/.claude.json`, `~/.claude/settings.json`, and in projects `.mcp.json` and `.claude/settings*.json` |
 | Cursor | `~/.cursor/mcp.json`, `.cursor/mcp.json` |
-| VS Code | the user `mcp.json` and `settings.json`, `.vscode/mcp.json`, `.vscode/settings.json` |
+| VS Code | the user `mcp.json` and `settings.json` and those of each profile, `.vscode/mcp.json`, `.vscode/settings.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| Cline, Roo Code | their settings files under VS Code's `globalStorage`, and `.roo/mcp.json` |
-| Gemini CLI | `~/.gemini/settings.json`, `.gemini/settings.json` |
+| Cline, Roo Code | their settings files under the `globalStorage` of VS Code, Cursor and Windsurf, and `.roo/mcp.json` |
+| Gemini CLI | `~/.gemini/settings.json`, `~/.gemini/extensions/*/gemini-extension.json`, `.gemini/settings.json` |
 
 With no arguments it scans these files in your home directory and the project files in the current folder, without descending into subfolders. A folder passed as an argument is searched recursively. JSON with comments and trailing commas is fine.
 

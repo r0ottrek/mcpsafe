@@ -78,7 +78,7 @@ function main() {
   }
 
   const includeHome = !v['no-home'];
-  const paths = positionals.length ? positionals : includeHome ? [process.cwd()] : [];
+  const paths = positionals.length ? positionals : [process.cwd()];
   const color = !v['no-color'] && !process.env.NO_COLOR && (process.stdout.isTTY || !!process.env.FORCE_COLOR) && !v.json;
 
   return scan({
