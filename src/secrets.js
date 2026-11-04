@@ -2,7 +2,7 @@
 
 // `group` names the capture group that holds the secret itself (default: the
 // whole match). `valid` rejects matches that only look like the pattern.
-const DB_URL = /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver|clickhouse)(?:\+\w+)?:\/\/[^:\s/@]*:([^@\s?#]{3,})@/;
+const DB_URL = /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver|clickhouse)(?:\+\w{1,32})?:\/\/[^:\s/@]{0,256}:([^@\s?#]{3,256})@/; // bounded, so it runs in linear time
 
 export const SECRET_PATTERNS = [
   { name: 'Anthropic API key', re: /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}/ },
@@ -40,7 +40,7 @@ function keyWords(key) {
   return String(key).split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean).map((w) => w.toLowerCase());
 }
 
-function keyLooksSecret(key) {
+export function keyLooksSecret(key) {
   if (!key) return false;
   const words = keyWords(key);
   if (!words.length || NON_SECRET_KEY_END.has(words[words.length - 1])) return false;
@@ -48,7 +48,7 @@ function keyLooksSecret(key) {
 }
 
 // Values that are clearly not credentials, whatever their key is called.
-function looksLikeSetting(v, key) {
+export function looksLikeSetting(v, key) {
   if (/^[a-z][\w+.-]*:\/\//i.test(v)) return true; // any URL; DB URLs are covered by the pattern above
   if (/^[./~]/.test(v) || /^[A-Za-z]:[\\/]/.test(v) || v.startsWith('\\\\')) return true; // paths
   if (/[\\/]/.test(v) && /\.[A-Za-z0-9]{1,5}$/.test(v.split(/[\\/]/).pop())) return true; // relative path to a file

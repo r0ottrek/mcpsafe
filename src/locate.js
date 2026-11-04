@@ -1,7 +1,7 @@
 // Maps a finding's JSON path (e.g. mcpServers.github.env.TOKEN or
 // servers.x.args[2]) back to a line number in the original config text,
 // and builds masked source snippets for reports.
-import { findSecrets, isPlaceholder, mask, SECRET_PATTERNS } from './secrets.js';
+import { applyRanges, knownRanges, maskString, secretIndex, secretRanges } from './mask.js';
 
 // ---------------- Tokenizer (JSON with comments) ----------------
 
@@ -33,8 +33,9 @@ function tokenize(text) {
       const raw = text.slice(start + 1, Math.min(i, n));
       if (closed) i++;
       let value = raw;
-      try { value = JSON.parse(`"${raw}"`); } catch { /* keep raw */ }
-      tokens.push({ type: 'str', start, end: i, raw, value, closed, line });
+      let parsed = false;
+      try { value = JSON.parse(`"${raw}"`); parsed = true; } catch { /* keep raw */ }
+      tokens.push({ type: 'str', start, end: i, raw, value, parsed, closed, line });
       continue;
     }
     if (PUNCT.has(c)) { tokens.push({ type: c, start: i, end: i + 1, line }); i++; continue; }
@@ -142,96 +143,86 @@ export function lineOf(text, jsonPath) {
 }
 
 // ---------------- Masking ----------------
+// The masking itself is in src/mask.js. This part walks the config's tokens
+// so that each string is judged with its JSON key, or with the array element
+// (a --flag) right before it.
 
-const BULLETS = '••••••••';
 const jsonEsc = (s) => JSON.stringify(s).slice(1, -1);
-const FLAG = /^--?([\w-]+)$/;
-const KEY_EQ = /^-{0,2}([A-Za-z_][\w-]*)=(.+)$/s; // --api-key=xxx, -e API_KEY=xxx
-const GLOBAL_PATTERNS = SECRET_PATTERNS.filter((p) => !p.group).map((p) => ({ ...p, re: new RegExp(p.re.source, `${p.re.flags}g`) }));
 
-function replaceAll(s, secret) {
-  const m = jsonEsc(mask(secret));
-  for (const form of new Set([secret, jsonEsc(secret)])) if (form) s = s.split(form).join(m);
-  return s;
-}
-
-// Context-free masking that is safe on any text: known token formats,
-// user:password@ in URLs of any scheme, Authorization values and credential query parameters.
-function maskPatterns(s) {
-  for (const p of GLOBAL_PATTERNS) {
-    s = s.replace(p.re, (...a) => {
-      const m = a.slice(0, -2);
-      if (p.valid && !p.valid(m)) return m[0];
-      return mask(m[0]);
-    });
-  }
-  s = s.replace(/([a-z][\w+.-]*:\/\/[^:/@\s"'\\]*:)([^@\s"'?#\\]+)@/gi, (w, a, pw) => (/^\d+(?:\/|$)/.test(pw) || isPlaceholder(pw) || pw === BULLETS ? w : `${a}${BULLETS}@`));
-  s = s.replace(/\b(Bearer|Basic|Token)(\s+)([A-Za-z0-9._~+/=-]{16,})/g, (w, a, sp, v) => (isPlaceholder(v) ? w : `${a}${sp}${mask(v)}`));
-  s = s.replace(/([?&](?:[\w-]*(?:key|token|secret|auth|password|sig|access)[\w-]*)=)([^&"'\s#\\]+)/gi, (w, k, v) => (isPlaceholder(v) ? w : `${k}${mask(v)}`));
-  return s;
-}
-
-// Everything a check could flag in one string value, given its context.
-function secretsIn(value, keyName) {
-  const dets = [...findSecrets(value, keyName)];
-  const eq = value.match(KEY_EQ);
-  if (eq) dets.push(...findSecrets(eq[2], eq[1]));
-  return dets;
-}
-
-// Mask one string token's raw (still JSON-escaped) content.
-function maskRaw(raw, value, dets, known) {
-  if (dets.some((d) => d.type === 'Private key')) return jsonEsc(mask(value));
-  const all = [...new Set([...dets.map((d) => d.secret), ...known])].filter(Boolean).sort((a, b) => b.length - a.length);
-  let s = raw;
-  for (const secret of all) s = replaceAll(s, secret);
-  return maskPatterns(s);
-}
-
-// For each string value: the key it belongs to, or the --flag right before it in an array.
+// For each string value: the key it belongs to, or the array element before it.
 function withContext(tokens) {
   const out = [];
   for (let j = 0; j < tokens.length; j++) {
     const tok = tokens[j];
     if (tok.type !== 'str') continue;
     const isKey = tokens[j + 1]?.type === ':';
-    let keyName = '';
-    const prev = tokens[j - 1];
-    if (!isKey && prev?.type === ':' && tokens[j - 2]?.type === 'str') keyName = tokens[j - 2].value;
-    else if (!isKey && prev?.type === ',' && tokens[j - 2]?.type === 'str' && tokens[j - 3]?.type !== ':') {
-      const f = String(tokens[j - 2].value).match(FLAG);
-      if (f) keyName = f[1];
-    }
-    out.push({ tok, isKey, keyName });
+    let key = '';
+    let prev = '';
+    const before = tokens[j - 1];
+    if (!isKey && before?.type === ':' && tokens[j - 2]?.type === 'str') key = String(tokens[j - 2].value);
+    else if (!isKey && before?.type === ',' && tokens[j - 2]?.type === 'str' && tokens[j - 3]?.type !== ':') prev = String(tokens[j - 2].value);
+    out.push({ tok, isKey, key, prev });
   }
   return out;
 }
 
-function maskTokens(text, known = new Set()) {
+// Pass 1: the secrets in each string, judged in its context, and an index of
+// all of them, so that a repeat anywhere else in the file is hidden too.
+function analyze(text) {
   const strings = withContext(tokenize(text));
-  const dets = strings.map((x) => (x.isKey ? [] : secretsIn(String(x.tok.value), x.keyName)));
-  // Long secrets are also hidden wherever else they appear (repeats, comments, other strings).
-  const all = new Set(known);
-  for (const d of dets.flat()) if (d.secret && d.secret.length >= 8) all.add(d.secret);
-  const free = (s) => {
-    for (const secret of [...all].sort((a, b) => b.length - a.length)) s = replaceAll(s, secret);
-    return maskPatterns(s);
-  };
+  const found = strings.map(({ tok, isKey, key, prev }) => (isKey ? [] : secretRanges(String(tok.value), { key, prev })));
+  const all = new Set();
+  strings.forEach(({ tok }, j) => {
+    const v = String(tok.value);
+    for (const [a, b] of found[j]) {
+      const secret = v.slice(a, b);
+      if (secret.length >= 8) { all.add(secret); all.add(jsonEsc(secret)); }
+    }
+  });
+  return { strings, found, index: secretIndex(all) };
+}
+const analyses = new Map();
+
+/**
+ * Every secret found in a config's text, as a lookup table for the `known`
+ * option of the functions in src/mask.js, or null when there is none.
+ */
+export function configSecrets(text) {
+  if (!text) return null;
+  return cached(analyses, text, analyze).index;
+}
+
+// Only punctuation and white space between two strings: nothing to mask.
+const PLAIN = /^[\s{}[\]:,]*$/;
+
+// Pass 2: each string with its own and the known secrets hidden. Text outside
+// strings (comments, bare values) is masked as free text.
+function maskTokens(text, a) {
+  const free = (g) => (PLAIN.test(g) ? g : maskString(g, { known: a.index }));
   let out = '';
   let pos = 0;
-  strings.forEach(({ tok }, j) => {
+  a.strings.forEach(({ tok }, j) => {
     out += free(text.slice(pos, tok.start));
-    out += `"${maskRaw(tok.raw, String(tok.value), dets[j], all)}${tok.closed ? '"' : ''}`;
+    const v = String(tok.value);
+    const ranges = a.found[j].slice();
+    knownRanges(v, a.index, ranges);
+    if (!ranges.length) out += text.slice(tok.start, tok.end);
+    else {
+      // A JSON string holds no raw line break, so a masked key block becomes one short value.
+      const m = applyRanges(v, ranges, false);
+      out += `"${tok.parsed ? jsonEsc(m) : m}${tok.closed ? '"' : ''}`;
+    }
     pos = tok.end;
   });
   return out + free(text.slice(pos));
 }
 const masked = new Map();
+const maskedLines = new Map();
 
 /** The whole config text with every secret masked. Line breaks are kept, so lines still line up. */
 export function maskText(text) {
   if (!text) return text;
-  return cached(masked, text, (t) => maskTokens(t));
+  return cached(masked, text, (t) => maskTokens(t, cached(analyses, t, analyze)));
 }
 
 /**
@@ -240,13 +231,14 @@ export function maskText(text) {
  * or maskText() when the whole file is available.
  */
 export function maskLine(line) {
-  return maskTokens(String(line));
+  const t = String(line);
+  return maskTokens(t, analyze(t));
 }
 
 /** Lines around `line` (1-based), masked. Returns [{n, text, hit}] */
 export function snippet(text, line, context = 2) {
   if (!text || !line) return null;
-  const lines = maskText(text).split('\n');
+  const lines = cached(maskedLines, text, (t) => maskText(t).split('\n'));
   const from = Math.max(1, line - context);
   const to = Math.min(lines.length, line + context);
   const out = [];

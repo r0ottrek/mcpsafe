@@ -3,10 +3,10 @@
 // No network requests, so it can be opened offline and shared as one file.
 import { RULES, SEVERITIES } from '../rules.js';
 import { displayPath, POISON } from '../checks.js';
-import { snippet } from '../locate.js';
+import { configSecrets, snippet } from '../locate.js';
+import { maskArgv, maskString } from '../mask.js';
 import { impactByRule } from '../score.js';
 import { launchedPackages, effectiveCommand } from '../packages.js';
-import { detectSecret, mask, SECRET_PATTERNS } from '../secrets.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
@@ -42,43 +42,25 @@ function markPoison(text) {
   return out + esc(text.slice(pos));
 }
 
-const unquote = (t) => t.replace(/^(["'])(.*)\1$/, '$2');
-const hide = (text, det) => text.split(det.match).join(mask(det.match));
-
-// Mask credentials in a command line or other free text: KEY=value
-// assignments, the value after a --flag (or after Bearer), known token
-// formats anywhere, passwords in URLs and credential query parameters.
-export function maskCommand(text) {
-  const parts = String(text ?? '').split(/(\s+)/);
-  let prev = '';
-  for (let i = 0; i < parts.length; i += 2) {
-    const tok = parts[i];
-    if (!tok) continue;
-    const kv = tok.match(/^["']?-{0,2}([A-Za-z_][\w.-]*)=(.+)$/);
-    let det = kv ? detectSecret(unquote(kv[2].replace(/["']$/, '')), kv[1]) : null;
-    if (!det && /^-{1,2}[A-Za-z][\w-]*$/.test(prev)) det = detectSecret(unquote(tok), prev.replace(/^-+/, ''));
-    if (!det && /^(Bearer|Basic|Token)$/i.test(prev)) det = detectSecret(unquote(tok), 'bearer');
-    if (!det) det = detectSecret(unquote(tok), '');
-    if (det) parts[i] = hide(tok, det);
-    prev = tok;
-  }
-  let out = parts.join('').replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/g, '$1••••••••@');
-  for (const { re } of SECRET_PATTERNS) out = out.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`), (m) => (m.includes('••••') ? m : mask(m)));
-  return out.replace(/([?&](?:[\w-]*(?:key|token|secret|auth|password|sig|access)[\w-]*)=)([^&\s"']+)/gi, (_, k, v) => `${k}${mask(v)}`);
+// Mask credentials in a command line or other free text. The masking is
+// shared with every report: see src/mask.js.
+export function maskCommand(text, known = null) {
+  return maskString(String(text ?? ''), { known });
 }
 
 // What a server runs, for the Servers table. Masked before it is shortened,
 // so a cut cannot leave part of a secret behind.
-function launcher(s) {
+function launcher(s, known) {
   let text;
   if (s.url) {
     try { const u = new URL(s.url); text = `${u.protocol.replace(':', '')}://${u.host}${u.pathname === '/' ? '' : u.pathname}`; } catch { text = s.url; }
   } else {
     const pkg = launchedPackages(s)[0];
     const { base } = effectiveCommand(s);
-    text = pkg ? `${base} ${pkg.spec}` : [s.command, ...s.args].filter(Boolean).join(' ');
+    // Argument by argument, so that a value after a --flag is recognised.
+    text = pkg ? maskCommand(`${base} ${pkg.spec}`, known) : maskArgv([s.command, ...s.args].filter(Boolean), { known }).join(' ');
   }
-  const chars = [...maskCommand(text)];
+  const chars = [...(s.url ? maskCommand(text, known) : text)];
   return chars.length > 80 ? `${chars.slice(0, 79).join('')}…` : chars.join('');
 }
 
@@ -154,7 +136,7 @@ export function renderHtml(result) {
         <tr>
           <td>${fs.length ? `<button type="button" class="link strong" data-key="${esc(`server:${s.name}`)}" data-label="${esc(`server ${s.name}`)}">${esc(s.name)}</button>` : `<strong>${esc(s.name)}</strong>`}</td>
           <td>${esc(s.client)}${s.scope === 'project' ? ' (project)' : ''}${s.disabled ? ', disabled' : ''}</td>
-          <td><code>${esc(launcher(s))}</code></td>
+          <td><code>${esc(launcher(s, configSecrets(textOf[s.file])))}</code></td>
           <td>${counts || '<span class="muted">None</span>'}</td>
         </tr>`;
   }).join('');
@@ -167,7 +149,7 @@ export function renderHtml(result) {
     if (snip) {
       excerpt = `<pre class="excerpt" aria-label="Excerpt from ${esc(displayPath(f.file))}">${snip.map((l) => `<span class="${l.hit ? 'ln hit' : 'ln'}"><span class="no">${l.n}</span>${esc(l.text) || ' '}</span>`).join('')}</pre>`;
     } else if (f.evidence) {
-      excerpt = `<p class="label">${isTool ? `Description of tool <code>${esc(f.jsonPath.slice(6))}</code>, as the model sees it` : 'Evidence'}</p><pre class="excerpt wrap">${f.id === 'MCS016' ? markPoison(f.evidence) : esc(maskCommand(f.evidence))}</pre>`;
+      excerpt = `<p class="label">${isTool ? `Description of tool <code>${esc(f.jsonPath.slice(6))}</code>, as the model sees it` : 'Evidence'}</p><pre class="excerpt wrap">${f.id === 'MCS016' ? markPoison(f.evidence) : esc(maskCommand(f.evidence, configSecrets(textOf[f.file])))}</pre>`;
     }
     const where = [
       f.server ? ['Server', `${esc(f.server)}${f.client ? ` in ${esc(f.client)}` : ''}`] : f.client ? ['Client', esc(f.client)] : null,

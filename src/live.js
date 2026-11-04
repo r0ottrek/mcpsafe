@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mask } from './secrets.js';
+import { maskString, secretIndex, secretsOf, secretsOfArgv } from './mask.js';
 
 const PROTOCOL = '2025-06-18';
 const CLIENT = { name: 'mcpsafe', version: '1.0.0' };
@@ -175,6 +175,8 @@ function prepare(server, ctx) {
     if (!server.command) throw new Error('no command');
     const command = expandVars(server.command, ctx);
     const args = (server.args || []).map((a) => expandVars(a, ctx));
+    // Credentials written into the command line, as written and as expanded.
+    for (const v of [...secretsOfArgv([server.command, ...(server.args || [])].map(String)), ...secretsOfArgv([command, ...args])]) ctx.secrets.add(v);
     const env = { ...process.env };
     for (const [k, v] of Object.entries(server.env || {})) {
       if (v == null || typeof v === 'object') continue;
@@ -198,6 +200,7 @@ function prepare(server, ctx) {
   }
   const before = ctx.misses || 0;
   const url = expandVars(server.url || '', ctx);
+  for (const v of [...secretsOf(server.url), ...secretsOf(url)]) ctx.secrets.add(v);
   if ((ctx.misses || 0) > before) throw new Error('the server URL refers to a variable that is not set');
   try {
     const u = new URL(url);
@@ -486,10 +489,9 @@ function sseSession(server, prep) {
 // ---------------------------------------------------------------------------
 
 function cleanMessage(e, ctx) {
-  let msg = e?.message || String(e);
-  for (const v of [...ctx.secrets].filter((s) => s && s.length >= 4).sort((a, b) => b.length - a.length)) {
-    msg = msg.split(v).join(mask(v));
-  }
+  // Values from the environment and credentials from the config, plus
+  // anything else that looks like a credential.
+  let msg = maskString(e?.message || String(e), { known: secretIndex(ctx.secrets, 4) });
   if (ctx.unresolved.size) msg += ` (not set: ${[...ctx.unresolved].join(', ')})`;
   return msg;
 }

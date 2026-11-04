@@ -9,6 +9,7 @@ import { renderHtml } from '../src/report/html.js';
 import { renderSarif } from '../src/report/sarif.js';
 import { renderMarkdown } from '../src/report/markdown.js';
 import { ruleList, SEVERITIES } from '../src/rules.js';
+import { safe } from '../src/report/text.js';
 
 const HELP = `mcpsafe ${VERSION}
 Audit MCP server and AI agent configs for risky setups.
@@ -108,7 +109,7 @@ function main() {
       },
     });
   } catch (e) {
-    console.error(`mcpsafe: ${e.message}\nRun mcpsafe --help for usage.`);
+    console.error(`mcpsafe: ${safe(e.message)}\nRun mcpsafe --help for usage.`);
     return Promise.resolve(2);
   }
   const { values: v, positionals } = parsed;
@@ -144,7 +145,7 @@ function main() {
     connect: v.connect,
     toolsFiles: v.tools,
     ignore: (v.ignore || []).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean),
-    onProgress: (m) => { if (process.stderr.isTTY && !v.json) process.stderr.write(`\r\x1b[2K  ${m}`); },
+    onProgress: (m) => { if (process.stderr.isTTY && !v.json) process.stderr.write(`\r\x1b[2K  ${safe(m)}`); },
   }).then((result) => {
     if (process.stderr.isTTY && v.connect && !v.json) process.stderr.write('\r\x1b[2K');
     if (v.json) process.stdout.write(`${JSON.stringify(toJson(result), null, 2)}\n`);
@@ -165,7 +166,7 @@ function main() {
     const output = (kind, file, write, htmlOnly = false) => {
       const why = refuse(file, htmlOnly);
       if (why) {
-        console.error(`mcpsafe: not writing the ${kind} to ${path.resolve(file)}: ${why}`);
+        console.error(`mcpsafe: not writing the ${kind} to ${safe(path.resolve(file))}: ${safe(why)}`);
         writeFailed = true;
         return null;
       }
@@ -173,7 +174,7 @@ function main() {
         return write(path.resolve(file));
       } catch (e) {
         const why = { ENOENT: 'its folder does not exist', EACCES: 'permission denied', EPERM: 'permission denied', EROFS: 'read-only file system' }[e.code] || e.message;
-        console.error(`mcpsafe: could not write the ${kind} to ${path.resolve(file)}: ${why}`);
+        console.error(`mcpsafe: could not write the ${kind} to ${safe(path.resolve(file))}: ${safe(why)}`);
         writeFailed = true;
         return null;
       }
@@ -210,11 +211,11 @@ function main() {
     const errors = result.errors || [];
     const missing = errors.filter((e) => e.missing);
     const unreadable = errors.filter((e) => !e.missing);
-    for (const e of missing) console.error(`mcpsafe: path not found: ${e.path}`);
+    for (const e of missing) console.error(`mcpsafe: path not found: ${safe(e.path)}`);
     if (unreadable.length && gated) {
       const n = unreadable.length;
       console.error(`mcpsafe: ${n} config file${n === 1 ? '' : 's'} could not be read or parsed, so the scan is incomplete and cannot pass --fail-on or --min-score`);
-      for (const e of unreadable) console.error(`  ${e.path}: ${e.error}`);
+      for (const e of unreadable) console.error(`  ${safe(e.path)}: ${safe(e.error)}`);
     }
     if (missing.length || (unreadable.length && gated) || writeFailed) code = 2;
     return code;
@@ -223,7 +224,7 @@ function main() {
 
 main().then((code) => { process.exitCode = code; }).catch((e) => {
   if (e?.expected || !process.env.MCPSAFE_DEBUG) {
-    console.error(`mcpsafe: ${e?.message ?? e}`);
+    console.error(`mcpsafe: ${safe(e?.message ?? e)}`);
     if (!e?.expected) console.error('Set MCPSAFE_DEBUG=1 to see the stack trace.');
   } else {
     console.error(`mcpsafe: ${e.stack || e.message}`);

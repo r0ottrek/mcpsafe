@@ -2,7 +2,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { RULES, SEVERITIES } from './rules.js';
-import { detectSecret, isPlaceholder, mask, SECRET_PATTERNS } from './secrets.js';
+import { detectSecret, isPlaceholder, mask } from './secrets.js';
+import { isCredentialParam, maskArgv, maskString } from './mask.js';
 import { effectiveCommand, launchedPackages, parseDockerRun, argsAfterPackage, splitCommandLine } from './packages.js';
 
 const INVISIBLE = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu;
@@ -30,45 +31,13 @@ function downgrade(sev) {
 
 const isLocalHost = (h) => /^(localhost|127(\.\d+){3}|\[?::1\]?|0\.0\.0\.0|host\.docker\.internal)$/i.test(h);
 
-// A URL query parameter whose name says it holds a credential. The name is
-// matched as a whole word (after splitting camelCase), so "design",
-// "keyboard" or "author" do not count.
-const CRED_PARAM = /^(?:.*[_.-])?(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|sig|signature|credentials?|access[_-]?(?:token|key)|client[_-]?secret)$/i;
-const isCredentialParam = (k) => CRED_PARAM.test(String(k).replace(/([a-z0-9])([A-Z])/g, '$1_$2'));
 const isRealCredentialValue = (v) => !!v && v.length >= 8 && !isPlaceholder(v) && !/\{\{.*\}\}/.test(v);
 
-const MASK = '•'.repeat(8);
-
 /**
- * Masks every credential-looking part of a string meant for display (finding
- * messages and evidence): URL userinfo, credential query values, KEY=value
- * and --flag value pairs with credential names, Bearer/Basic values, and
- * anything matching a known token format.
+ * Masks every credential in a string meant for display (finding messages and
+ * evidence). The masking is shared with every report: see src/mask.js.
  */
-export function maskText(text) {
-  if (text == null) return text;
-  let s = String(text);
-  // scheme://user:password@host and scheme://token@host
-  s = s.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)([^@/\s?#'"]+)@/gi, (whole, scheme, info) => {
-    const colon = info.indexOf(':');
-    if (colon >= 0) return `${scheme}${info.slice(0, colon)}:${MASK}@`;
-    if (info.length >= 20 || detectSecret(info, 'token')) return `${scheme}${mask(info)}@`;
-    return whole;
-  });
-  s = s.replace(/([?&])([\w.-]+)=([^&#\s'"]+)/g, (whole, sep, k, v) => (isCredentialParam(k) && !isPlaceholder(v) ? `${sep}${k}=${mask(v)}` : whole));
-  // GITHUB_TOKEN=... and --api-key=... (a whole word, so "mcp-server-keycloak==1.0" is left alone)
-  s = s.replace(/(^|[\s;&|'"(])(--?)?([A-Za-z_][\w-]*)=([^=\s'"&;|][^\s'"&;|]*)/g, (whole, pre, dash = '', k, v) => (isCredentialParam(k) && !isPlaceholder(v) ? `${pre}${dash}${k}=${mask(v)}` : whole));
-  // --api-key <value>
-  s = s.replace(/(^|\s)(--?[\w-]+)(\s+)([^\s'"-][^\s'"]*)/g, (whole, pre, flag, sp, v) => (isCredentialParam(flag.replace(/^-+/, '')) && !isPlaceholder(v) ? `${pre}${flag}${sp}${mask(v)}` : whole));
-  // x-api-key: <value> (Authorization: Bearer <value> is handled below)
-  s = s.replace(/(^|[\s'"])([\w-]+)(\s*:\s*)([^\s'"]{8,})/g, (whole, pre, k, sep, v) => (isCredentialParam(k) && !/^(Bearer|Basic)$/i.test(v) && !isPlaceholder(v) ? `${pre}${k}${sep}${mask(v)}` : whole));
-  s = s.replace(/\b(Bearer|Basic)(\s+)([A-Za-z0-9._~+/=-]{8,})/gi, (whole, kind, sp, v) => (isPlaceholder(v) ? whole : `${kind}${sp}${mask(v)}`));
-  for (const p of SECRET_PATTERNS) {
-    if (/^Database/.test(p.name)) continue; // the userinfo step above already masks the password
-    s = s.replace(new RegExp(p.re.source, `${p.re.flags.replace('g', '')}g`), (m) => mask(m));
-  }
-  return s;
-}
+export const maskText = (text) => maskString(text);
 
 // ---- Well-known packages, used for typosquat and capability detection ----
 const POPULAR_BY_MANAGER = {
@@ -369,11 +338,12 @@ function checkShell(ctx) {
   const s = ctx.server;
   const { base, args } = effectiveCommand(s);
   const joined = [s.command, ...s.args].filter(Boolean).join(' ');
-  const shown = maskText(joined).slice(0, 160);
+  // Masked argument by argument, so a value after a --flag is hidden too. Only built when a finding uses it.
+  const shown = () => maskArgv([s.command, ...s.args].filter(Boolean)).join(' ').slice(0, 160);
   const out = [];
   // MCS010: curl | sh
   if (/(curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|\|\s*(iex|invoke-expression)\b|(ba)?sh\s+<\(\s*curl/i.test(joined)) {
-    out.push(finding('MCS010', ctx, 'The launch command pipes a downloaded script into a shell.', { evidence: shown }));
+    out.push(finding('MCS010', ctx, 'The launch command pipes a downloaded script into a shell.', { evidence: shown() }));
   }
   const pkgs = launchedPackages(s);
   const name = [s.name, ...pkgs.map((p) => p.name)].join(' ');
@@ -381,10 +351,10 @@ function checkShell(ctx) {
   if (SHELL_PACKAGES.test(name) || (pkgs.length === 0 && /\b(shell|terminal)\b/i.test(s.name))) {
     out.push(finding('MCS007', ctx, `"${maskText(pkgs[0]?.name || s.name)}" exposes shell / command execution tools.`, { evidence: maskText(pkgs[0]?.spec || s.name), jsonPath: pkgs[0] ? argPath(s, pkgs[0].spec) : s.jsonPath }));
   } else if (agent) {
-    out.push(finding('MCS007', ctx, agent, { evidence: shown, jsonPath: s.command ? `${s.jsonPath}.command` : s.jsonPath }));
+    out.push(finding('MCS007', ctx, agent, { evidence: shown(), jsonPath: s.command ? `${s.jsonPath}.command` : s.jsonPath }));
   } else if (['bash', 'sh', 'zsh', 'powershell', 'pwsh'].includes(base) && args.some((a) => /^(-c|-command|-Command)$/i.test(a))) {
     // Inline shell script as the launcher is worth a look, but it is not a shell tool by itself.
-    out.push(finding('MCS007', ctx, 'Server is launched through an inline shell script, which hides what actually runs.', { severity: 'low', evidence: shown }));
+    out.push(finding('MCS007', ctx, 'Server is launched through an inline shell script, which hides what actually runs.', { severity: 'low', evidence: shown() }));
   }
   return out;
 }
