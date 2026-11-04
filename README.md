@@ -3,10 +3,12 @@
 mcpsafe reads the MCP server configuration of the AI tools on your machine (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Cline, Roo Code and Gemini CLI) and reports setups that are likely to hurt you: credentials stored in plain text, packages that run whatever version was published last, servers with shell or whole-disk access, tools that run without asking, and tool descriptions carrying hidden instructions for the model.
 
 ```
-npx mcpsafe
+npx github:r0ottrek/mcpsafe
 ```
 
-It needs Node 18 or later and has no dependencies. A normal scan only reads files.
+It needs Node 18 or later and has no dependencies. npx fetches it straight from this repository, so there is nothing to install. A normal scan only reads files.
+
+To keep it around as a `mcpsafe` command, install it once with `npm install -g github:r0ottrek/mcpsafe`. The examples below use that short name.
 
 ## Example
 
