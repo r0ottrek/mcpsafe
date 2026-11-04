@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { parseArgs } from 'node:util';
 import { scan, atOrAbove, toJson, VERSION } from '../src/scan.js';
 import { renderTerminal } from '../src/report/terminal.js';
@@ -97,12 +98,21 @@ function main() {
     else process.stdout.write(`${renderTerminal(result, { color, verbose: v.verbose, width: Math.min(process.stdout.columns || 100, 120) })}\n`);
 
     if (v.html) {
-      fs.writeFileSync(v.html, renderHtml(result));
-      if (!v.json) console.log(`  HTML report written to ${v.html}\n`);
+      let out = path.resolve(v.html);
+      try {
+        fs.writeFileSync(out, renderHtml(result));
+      } catch (e) {
+        // The current folder may not be writable (e.g. C:\Windows\System32).
+        // Fall back to the temp folder rather than failing after the scan.
+        if (!['EPERM', 'EACCES', 'EROFS'].includes(e.code)) throw e;
+        out = path.join(os.tmpdir(), path.basename(v.html));
+        fs.writeFileSync(out, renderHtml(result));
+      }
+      if (!v.json) console.log(`HTML report written to ${out}`);
     }
     if (v.sarif) {
       fs.writeFileSync(v.sarif, renderSarif(result));
-      if (!v.json) console.log(`  SARIF written to ${v.sarif}\n`);
+      if (!v.json) console.log(`SARIF written to ${path.resolve(v.sarif)}`);
     }
 
     if (v.markdown) fs.appendFileSync(v.markdown, renderMarkdown(result));
