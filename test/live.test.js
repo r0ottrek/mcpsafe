@@ -209,7 +209,8 @@ test('Windows: .cmd shims go through cmd.exe with every argument quoted and esca
   assert.equal(cmd.file, 'C:\\Windows\\system32\\cmd.exe');
   assert.equal(cmd.verbatim, true);
   assert.deepEqual(cmd.args.slice(0, 3), ['/d', '/s', '/c']);
-  assert.equal(cmd.args[3], '"C:\\Program^ Files\\nodejs\\npx.cmd ^"-y^" ^"pkg@1.0.0^" ^"C:\\My^ Files\\\\^" ^"a^&b^|c^" ^"say^ \\^"hi\\^"^" ^"^%PATH^%^""');
+  // npx.cmd passes %* on to node.exe, so its arguments are escaped twice too.
+  assert.equal(cmd.args[3], '"C:\\Program^ Files\\nodejs\\npx.cmd ^^^"-y^^^" ^^^"pkg@1.0.0^^^" ^^^"C:\\My^^^ Files\\\\^^^" ^^^"a^^^&b^^^|c^^^" ^^^"say^^^ \\^^^"hi\\^^^"^^^" ^^^"^^^%PATH^^^%^^^""');
 
   // npm cmd-shims re-parse their arguments, so metacharacters are escaped twice.
   const shim = spawnPlan('C:\\p\\node_modules\\.bin\\srv', ['a&b'], opts);

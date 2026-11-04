@@ -4,8 +4,11 @@
 //
 // Servers are launched the way the clients launch them:
 // - ${VAR}, ${env:VAR} and ${VAR:-default} in the command, args, env, url and
-//   headers are expanded from the environment mcpsafe runs in. Expanded values
-//   only go to the server; they are masked in any error message.
+//   headers are expanded from the environment mcpsafe runs in (for Gemini CLI
+//   also bare $VAR). Expanded values only go to the server; they are masked in
+//   any error message.
+// - When the scan is done, each stdio server is stopped together with anything
+//   it started (its process group on POSIX, its process tree on Windows).
 // - Project servers start in the project folder (or their own cwd setting).
 // - On Windows nothing goes through a shell unquoted. .exe files are started
 //   directly. Anything else (npx.cmd and other .cmd/.bat shims) is started as
@@ -19,6 +22,10 @@ import path from 'node:path';
 import { mask } from './secrets.js';
 
 const PROTOCOL = '2025-06-18';
+// MCP versions are dates. Later dates than these are accepted without comment
+// (newer spec versions); earlier ones and anything that is not a date are not.
+const OLDEST_PROTOCOL = '2024-11-05';
+const VERSION_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
 const CLIENT = { name: 'mcpsafe', version: '1.0.0' };
 export const MAX_PAGES = 100;
 
@@ -36,6 +43,24 @@ function withTimeout(promise, ms, label) {
 const NAME = '[A-Za-z_][A-Za-z0-9_]*';
 const PLAIN = new RegExp(`^(?:env:)?(${NAME})$`);
 const WITH_DEFAULT = new RegExp(`^(${NAME}):-([\\s\\S]*)$`);
+const BARE = new RegExp(NAME, 'y');
+
+function expandOne(whole, inner, ctx) {
+  if (inner === 'userHome' && ctx.home) return ctx.home;
+  if (inner === 'workspaceFolder' && ctx.workspace) return ctx.workspace;
+  let m = PLAIN.exec(inner);
+  if (m) {
+    const v = ctx.env[m[1]];
+    if (v !== undefined) { ctx.secrets?.add(v); return v; }
+  } else if ((m = WITH_DEFAULT.exec(inner))) {
+    const v = ctx.env[m[1]];
+    if (v) { ctx.secrets?.add(v); return v; }
+    return m[2];
+  }
+  ctx.unresolved?.add(whole);
+  ctx.misses = (ctx.misses || 0) + 1;
+  return whole;
+}
 
 /**
  * Expands ${VAR}, ${env:VAR}, ${VAR:-default}, ${userHome} and
@@ -43,24 +68,47 @@ const WITH_DEFAULT = new RegExp(`^(${NAME}):-([\\s\\S]*)$`);
  * variables, ${input:...}) are left as they are and recorded in ctx.unresolved.
  * Values taken from the environment are recorded in ctx.secrets so that error
  * messages can mask them.
+ *
+ * With ctx.bare (Gemini CLI, which expands bare $VAR anywhere in its
+ * settings), $VAR is expanded too. An unset bare $VAR stays as it is, as Gemini
+ * CLI leaves it, and does not count as a miss: a "$" inside a password must not
+ * make the value disappear.
+ *
+ * A plain scan rather than one regex, so that a long run of "${" with no
+ * closing brace takes linear time.
  */
 export function expandVars(value, ctx) {
-  return String(value).replace(/\$\{([^}]*)\}/g, (whole, inner) => {
-    if (inner === 'userHome' && ctx.home) return ctx.home;
-    if (inner === 'workspaceFolder' && ctx.workspace) return ctx.workspace;
-    let m = PLAIN.exec(inner);
-    if (m) {
-      const v = ctx.env[m[1]];
-      if (v !== undefined) { ctx.secrets?.add(v); return v; }
-    } else if ((m = WITH_DEFAULT.exec(inner))) {
-      const v = ctx.env[m[1]];
-      if (v) { ctx.secrets?.add(v); return v; }
-      return m[2];
+  const s = String(value);
+  let out = '';
+  let i = 0;
+  let closeAhead = true;
+  for (;;) {
+    const d = s.indexOf('$', i);
+    if (d < 0) break;
+    out += s.slice(i, d);
+    if (s[d + 1] === '{' && closeAhead) {
+      const e = s.indexOf('}', d + 2);
+      if (e >= 0) {
+        out += expandOne(s.slice(d, e + 1), s.slice(d + 2, e), ctx);
+        i = e + 1;
+        continue;
+      }
+      closeAhead = false;
     }
-    ctx.unresolved?.add(whole);
-    ctx.misses = (ctx.misses || 0) + 1;
-    return whole;
-  });
+    if (ctx.bare) {
+      BARE.lastIndex = d + 1;
+      const m = BARE.exec(s);
+      if (m) {
+        const v = ctx.env[m[0]];
+        if (v !== undefined) { ctx.secrets?.add(v); out += v; } else { ctx.unresolved?.add(`$${m[0]}`); out += `$${m[0]}`; }
+        i = d + 1 + m[0].length;
+        continue;
+      }
+    }
+    out += '$';
+    i = d + 1;
+  }
+  return out + s.slice(i);
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +126,10 @@ export function projectRoot(server) {
 }
 
 function normDir(p) {
-  const r = path.resolve(p);
+  let r = path.resolve(p);
+  // Claude Code keys projects by their real path; a scan through a symlinked
+  // folder must still match.
+  try { r = fs.realpathSync.native(r); } catch { /* missing: compare as given */ }
   return process.platform === 'win32' ? r.replace(/\//g, '\\').toLowerCase() : r;
 }
 
@@ -159,8 +210,11 @@ export function spawnPlan(command, args, { platform = process.platform, env = pr
   if (platform !== 'win32') return { file: command, args, verbatim: false };
   const resolved = resolveWindowsCommand(command, env, exists) || command;
   if (/\.(?:com|exe)$/i.test(resolved)) return { file: resolved, args, verbatim: false };
-  // npm's cmd-shims pass %* on to another command, which parses it once more.
-  const doubleEscape = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(resolved);
+  // Batch files hand %* on to another command line, which cmd.exe parses once
+  // more: npm's cmd-shims in node_modules\.bin and %AppData%\npm, and also
+  // nodejs\npx.cmd, npm.cmd, pnpm.cmd and yarn.cmd. Escaping only once lets a
+  // quote plus & or | in an argument split that second command line.
+  const doubleEscape = /\.(?:cmd|bat)$/i.test(resolved);
   const line = [escapeCommand(path.win32.normalize(resolved)), ...args.map((a) => escapeArgument(a, doubleEscape))].join(' ');
   return { file: getEnv(env, 'COMSPEC') || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true };
 }
@@ -293,11 +347,67 @@ export async function* sseEvents(body) {
 // ---------------------------------------------------------------------------
 // Transports
 
+// On POSIX every stdio server runs in a process group of its own (spawned
+// detached), so that a wrapper such as sh -c, npx, uvx or a script, and
+// everything it started, can be ended together. On Windows taskkill /T ends
+// the tree instead. `groups` holds the groups not yet known to be empty.
+const groups = new Set();
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+let hooked = false;
+
+/** Signals a process group. False (and forgotten) when the group is gone. */
+function signalGroup(pgid, sig) {
+  try {
+    process.kill(-pgid, sig);
+    return true;
+  } catch {
+    forgetGroup(pgid);
+    return false;
+  }
+}
+
+function forgetGroup(pgid) {
+  groups.delete(pgid);
+  unhook();
+}
+
+// When mcpsafe exits, or is stopped with Ctrl-C, nothing it started is left
+// running. A detached group no longer gets the terminal's Ctrl-C itself.
+function killAllGroups() {
+  for (const g of groups) { try { process.kill(-g, 'SIGKILL'); } catch { /* gone */ } }
+  groups.clear();
+}
+function onStopSignal(sig) {
+  killAllGroups();
+  unhook();
+  // With no other handler, end the way the signal would have ended us.
+  if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+}
+function hook() {
+  if (hooked) return;
+  hooked = true;
+  process.on('exit', killAllGroups);
+  for (const s of STOP_SIGNALS) process.on(s, onStopSignal);
+}
+function unhook() {
+  if (!hooked || groups.size) return;
+  hooked = false;
+  process.off('exit', killAllGroups);
+  for (const s of STOP_SIGNALS) process.off(s, onStopSignal);
+}
+
+/** Test hook: the process groups mcpsafe still watches. */
+export function liveGroups() {
+  return [...groups];
+}
+
 function stdioSession(server, prep) {
   const { plan } = prep;
+  const posix = process.platform !== 'win32';
   const child = spawn(plan.file, plan.args, {
-    env: prep.env, cwd: prep.cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsVerbatimArguments: plan.verbatim, windowsHide: true,
+    env: prep.env, cwd: prep.cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsVerbatimArguments: plan.verbatim, windowsHide: true, detached: posix,
   });
+  if (posix && child.pid != null) { groups.add(child.pid); hook(); }
   const pending = new Map();
   let exitErr = null;
   let closed = false;
@@ -346,28 +456,42 @@ function stdioSession(server, prep) {
       });
     },
     notify(method, params) { write({ jsonrpc: '2.0', method, params }); },
-    // MCP stdio shutdown: close stdin, then SIGTERM, then SIGKILL.
+    // MCP stdio shutdown: close stdin, then SIGTERM, then SIGKILL. On POSIX the
+    // signals go to the server's whole process group.
     close() {
       if (closed) return;
       closed = true;
       try { child.stdin.end(); } catch { /* ignore */ }
-      if (child.exitCode !== null || child.signalCode !== null || child.pid == null) { cleanup(); return; }
+      if (child.pid == null) { cleanup(); return; }
+      const pgid = child.pid;
+      // Once the server itself is gone, whatever it left in its group (a
+      // grandchild behind a wrapper) gets SIGTERM, then SIGKILL a second
+      // later. That timer does not hold mcpsafe open: if mcpsafe exits first,
+      // its exit hook kills the group.
+      const sweep = () => {
+        if (!posix || !signalGroup(pgid, 0)) return;
+        signalGroup(pgid, 'SIGTERM');
+        // After SIGKILL there is nothing left to do. Do not wait for the group
+        // to empty: where PID 1 does not reap orphans, zombies keep it alive.
+        setTimeout(() => { signalGroup(pgid, 'SIGKILL'); forgetGroup(pgid); }, 1000).unref();
+      };
+      if (child.exitCode !== null || child.signalCode !== null) { cleanup(); sweep(); return; }
       const term = setTimeout(() => {
-        if (process.platform === 'win32') {
-          // cmd.exe may sit between us and the server; end the whole tree.
-          try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {}); } catch { /* ignore */ }
+        if (posix) {
+          if (!signalGroup(pgid, 'SIGTERM')) { try { child.kill('SIGTERM'); } catch { /* ignore */ } }
         } else {
-          try { child.kill('SIGTERM'); } catch { /* ignore */ }
+          // cmd.exe may sit between us and the server; end the whole tree.
+          try { spawn('taskkill', ['/pid', String(pgid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {}); } catch { /* ignore */ }
         }
       }, 500);
       let last;
       const kill = setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        if (!posix || !signalGroup(pgid, 'SIGKILL')) { try { child.kill('SIGKILL'); } catch { /* ignore */ } }
         cleanup();
         // Wait for the exit so the process is reaped, but never hang on it.
         last = setTimeout(() => child.unref(), 1000);
       }, 2500);
-      child.once('exit', () => { clearTimeout(term); clearTimeout(kill); clearTimeout(last); cleanup(); });
+      child.once('exit', () => { clearTimeout(term); clearTimeout(kill); clearTimeout(last); cleanup(); sweep(); });
     },
   };
 }
@@ -500,7 +624,9 @@ function cleanMessage(e, ctx) {
  * values expanded from the environment.
  */
 export async function listTools(server, timeoutMs = 20000) {
-  const ctx = { env: process.env, home: os.homedir(), workspace: projectRoot(server), unresolved: new Set(), secrets: new Set(), misses: 0 };
+  const ctx = {
+    env: process.env, home: os.homedir(), workspace: projectRoot(server), bare: server.client === 'Gemini CLI', unresolved: new Set(), secrets: new Set(), misses: 0,
+  };
   let session = null;
   let done = false;
   const open = (kind, prep) => {
@@ -527,7 +653,16 @@ export async function listTools(server, timeoutMs = 20000) {
     } else {
       init = await open(server.transport === 'sse' ? 'sse' : 'stdio', prep);
     }
-    if (typeof init?.protocolVersion === 'string') session.setProtocolVersion?.(init.protocolVersion);
+    const notes = [];
+    const v = init?.protocolVersion;
+    if (typeof v === 'string' && VERSION_FORMAT.test(v)) {
+      session.setProtocolVersion?.(v);
+      if (v < OLDEST_PROTOCOL) notes.push(`the server answered with protocol version ${v}, which is older than any MCP version; tools were listed anyway`);
+    } else if (v !== undefined) {
+      // Never sent back as a header: it may not even be a valid header value.
+      const shown = typeof v === 'string' ? JSON.stringify(v.length > 40 ? `${v.slice(0, 40)}...` : v) : v === null ? 'null' : `a ${typeof v}`;
+      notes.push(`the server answered with an invalid protocol version (${shown}); tools were listed anyway`);
+    }
     await session.notify('notifications/initialized', {});
     const tools = [];
     const seen = new Set();
@@ -542,7 +677,8 @@ export async function listTools(server, timeoutMs = 20000) {
       if (seen.has(cursor)) { warning = 'the server repeated a page of its tool list; later pages were not checked'; break; }
       seen.add(cursor);
     }
-    if (warning) tools.warning = warning;
+    if (warning) notes.push(warning);
+    if (notes.length) tools.warning = notes.join('; ');
     return tools;
   };
   try {
