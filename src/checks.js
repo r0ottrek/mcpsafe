@@ -924,7 +924,7 @@ const OVERRIDE_CITED = /\b(?:such\s+as|like(?!\s*,)|for\s+example|for\s+instance
 // What follows an override that gives the next order: "... and always run", "..., then read",
 // ". Now send". "... and return an error" or "... and similar phrases" describe a detector.
 // Tested on the 80 characters after the match only.
-const OVERRIDE_GOES_ON = /^\s*(?:[,;:]\s*|\.\s+)?(?:(?:and|then|now|instead|also)\s+){0,3}(?:(?:always|immediately|just|silently|quietly|secretly|only)\s+)?(?:read|send|run|execute|print|output|reveal|show|tell|say|reply|respond|answer|call|use|do|follow|obey|act|pretend|upload|post|forward|include|copy|write|delete|remove|open|fetch|e-?mail|dump|grab|collect|give|list|cat|exfiltrate|leak|share|quote|paste|append|add|insert|attach|invoke|comply)\b/i;
+const OVERRIDE_GOES_ON = /^\s*(?:(?:[,;:.!]|--?|\u2014)\s*){0,3}(?:(?:and|then|now|instead|also|so|henceforth|from\s+now\s+on|you(?:\s+(?:are|will|must|should|shall|now|only|always)){0,2})[\s,]+){0,4}(?:(?:always|immediately|just|silently|quietly|secretly|only|must)\s+)?(?:recommend|suggest|promote|prefer|advertise|praise|mention|work|serve|obey|read|send|run|execute|print|output|reveal|show|tell|say|reply|respond|answer|call|use|do|follow|obey|act|pretend|upload|post|forward|include|copy|write|delete|remove|open|fetch|e-?mail|dump|grab|collect|give|list|cat|exfiltrate|leak|share|quote|paste|append|add|insert|attach|invoke|comply)\b/i;
 // An override written as an identifier and used as one: "set ignore_previous_rules to true".
 // Tested on the 40 characters around a match that had "_" or "-" in it.
 const IDENT_BEFORE = /\b(?:set|enable|disable|toggle|pass|use|turn\s+(?:on|off)|the|a|an)\s+['"\x60]?$/i;
@@ -1090,7 +1090,7 @@ const BACKREF = /^\s+(?:it|them|this|that|these|those|the\s+(?:file|key|keys|con
 // on a file copy tool is the tool's own job.
 const PLACE_NAME = new Set(['dest', 'destination', 'target', 'path', 'paths', 'dir', 'dirs', 'directory', 'folder', 'file', 'files', 'filename', 'filepath',
   'location', 'output', 'out', 'outdir', 'backup', 'archive', 'src', 'source', 'from', 'to', 'root', 'cwd', 'workspace', 'repo', 'repository', 'bucket',
-  'volume', 'mount', 'drive', 'disk', 'zip', 'tar', 'tarball', 'dst', 'name', 'names', 'url', 'uri', 'local', 'remote', 'base']);
+  'volume', 'mount', 'drive', 'disk', 'zip', 'tar', 'tarball', 'dst']);
 // Every word must name a place: destination, backup_dir and dest_path do; file_data,
 // output_text and dir_notes carry content next to a place word, so they are still sinks.
 const placeName = (name) => {
@@ -1812,8 +1812,10 @@ function toolNameIndex(serverOf) {
     candidates(text, accept = () => true, limit = Infinity, spend = () => true) {
       stamp++;
       const hits = [];
+      // String.includes is cheap per character, so the literal names are charged as one batch.
+      if (literal.length && !spend(Math.ceil((text.length * literal.length) / 4))) return [];
       for (const i of literal) {
-        if (hits.length >= limit || !spend(text.length)) return hits.map((j) => names[j]);
+        if (hits.length >= limit) return hits.map((j) => names[j]);
         if (accept(names[i]) && text.includes(names[i])) hits.push(i);
       }
       const key = squash(text);
@@ -1930,6 +1932,8 @@ export function checkTools(toolSets, serverByName = {}, known = null) {
         const prose = normalizeForMatch(segments.filter((s) => s.kind === 'prose').map((s) => s.text).join('\n')).norm;
         const urgent = ['override', 'conceal', 'exfil', 'steal', 'inject', 'emph', 'encoded', 'beaconleak'].some((x) => hits.some((h) => h.kind === x));
         const others = refStopped ? [] : refIndex.candidates(prose, (n) => !own.has(n), MAX_REF_CANDIDATES, spend);
+        // The budget can run out inside the literal search too; say so instead of going quiet.
+        if (!refStopped && refWork > REF_BUDGET) refStopped = { ctx, name: t.name };
         for (const other of others) {
           if (!spend(prose.length + 200)) {
             refStopped = { ctx, name: t.name };
