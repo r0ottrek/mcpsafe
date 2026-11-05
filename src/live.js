@@ -340,32 +340,37 @@ function parseJson(text) {
 export async function* sseEvents(body) {
   const reader = body.getReader();
   const dec = new TextDecoder();
-  let buf = '';
+  // The current line arrives in pieces; they are joined once, when its end is found. Only
+  // each new chunk is searched for a line end, so a long line arriving in many chunks is
+  // read in linear time (a growing string searched again for every chunk is quadratic).
+  let parts = [];
+  let partsLen = 0;
   let data = [];
   let dataLen = 0;
   let event = '';
   let done = false;
-  // Where the search for the next line end starts: text already searched is not searched
-  // again, so a long line arriving in many chunks is read in linear time.
-  let from = 0;
+  // The last chunk ended with "\r": a "\n" at the start of the next one belongs to it.
+  let skipLF = false;
   const EOL = /\r\n|\r|\n/g;
   try {
     while (!done) {
       const r = await reader.read();
-      if (r.done) { done = true; buf += dec.decode(); buf += '\n\n'; } else buf += dec.decode(r.value, { stream: true });
+      let s;
+      if (r.done) { done = true; s = `${dec.decode()}\n\n`; } else s = dec.decode(r.value, { stream: true });
+      let pos = 0;
+      if (skipLF && s.length) { if (s[0] === '\n') pos = 1; skipLF = false; }
       for (;;) {
-        EOL.lastIndex = from;
-        const m = EOL.exec(buf);
+        EOL.lastIndex = pos;
+        const m = EOL.exec(s);
         if (!m) {
-          from = buf.length;
-          if (buf.length + dataLen > MAX_LINE) throw new Error(`the server sent an event longer than ${MAX_LINE / 1024 / 1024} MB`);
+          if (pos < s.length) { parts.push(s.slice(pos)); partsLen += s.length - pos; }
+          if (partsLen + dataLen > MAX_LINE) throw new Error(`the server sent an event longer than ${MAX_LINE / 1024 / 1024} MB`);
           break;
         }
-        // A lone \r at the end may be the first half of \r\n.
-        if (m[0] === '\r' && m.index === buf.length - 1 && !done) { from = m.index; break; }
-        from = 0;
-        const line = buf.slice(0, m.index);
-        buf = buf.slice(m.index + m[0].length);
+        let line = s.slice(pos, m.index);
+        if (parts.length) { parts.push(line); line = parts.join(''); parts = []; partsLen = 0; }
+        pos = m.index + m[0].length;
+        if (m[0] === '\r' && pos === s.length) skipLF = true;
         if (line === '') {
           if (data.length) yield { event: event || 'message', data: data.join('\n') };
           data = [];

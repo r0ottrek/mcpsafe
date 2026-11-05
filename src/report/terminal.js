@@ -25,17 +25,24 @@ export function wrap(text, indent, width) {
   const max = Math.max(20, width - indent.length);
   const lines = [];
   let cur = '';
+  // Widths are measured once and then kept up to date, so a word of 200,000 characters is
+  // cut into lines in linear time.
+  let curW = 0;
   for (let word of String(text).split(/\s+/)) {
     if (!word) continue;
-    while (dispWidth(word) > max) {
-      const room = cur ? max - dispWidth(cur) - 1 : max;
-      if (room < 8) { lines.push(cur); cur = ''; continue; }
+    let wordW = dispWidth(word);
+    while (wordW > max) {
+      const room = cur ? max - curW - 1 : max;
+      if (room < 8) { lines.push(cur); cur = ''; curW = 0; continue; }
       const [head, rest] = splitW(word, room);
       lines.push(cur ? `${cur} ${head}` : head);
       cur = '';
+      curW = 0;
+      // A colour code cut in two would make the sum differ, so such a word is measured again.
+      wordW = word.includes('\x1b') ? dispWidth(rest) : wordW - dispWidth(head);
       word = rest;
     }
-    if (cur && dispWidth(cur) + 1 + dispWidth(word) > max) { lines.push(cur); cur = word; } else cur = cur ? `${cur} ${word}` : word;
+    if (cur && curW + 1 + wordW > max) { lines.push(cur); cur = word; curW = wordW; } else if (cur) { cur = `${cur} ${word}`; curW += 1 + wordW; } else { cur = word; curW = wordW; }
   }
   if (cur) lines.push(cur);
   return lines;
