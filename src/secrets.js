@@ -115,7 +115,7 @@ const CAMEL = /^[A-Z]?[a-z]+(?:[A-Z][a-z]+)*\d{0,2}$/;
 // "oauth2", "GCP", "Reader2", "2024". Random keys mix case and digits, so a
 // camelCase word allows digits only at its end, needs a vowel in every part and
 // parts of three letters or more on average ("yzuEpihKowqaCxgb" is not one).
-function wordyToken(t) {
+export function wordyToken(t) {
   // An all-caps word is an acronym (GCP, SA, AWS): short. Longer groups of
   // capitals are what license-style keys are made of (GBRLE-NROXA-FNUYV).
   if (/^[a-z]+\d{0,2}$/.test(t) || /^[A-Z]{1,4}\d{0,2}$/.test(t) || /^\d{1,4}$/.test(t)) return true;

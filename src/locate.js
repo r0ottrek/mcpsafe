@@ -1,7 +1,7 @@
 // Maps a finding's JSON path (e.g. mcpServers.github.env.TOKEN or
 // servers.x.args[2]) back to a line number in the original config text,
 // and builds masked source snippets for reports.
-import { applyRanges, knownRanges, maskString, secretIndex, secretRanges } from './mask.js';
+import { applyRanges, knownRanges, maskKnown, maskString, secretIndex, secretRanges } from './mask.js';
 
 // ---------------- Tokenizer (JSON with comments) ----------------
 
@@ -241,13 +241,27 @@ export function maskLine(line) {
   return maskTokens(t, analyze(t));
 }
 
-/** Lines around `line` (1-based), masked. Returns [{n, text, hit}] */
-export function snippet(text, line, context = 2) {
+/**
+ * Every secret found in any of the given config texts, as one lookup table for
+ * the `known` option (or null). A secret marked in one file can be repeated
+ * without that context in another, and must be hidden there too.
+ */
+export function allConfigSecrets(texts) {
+  const all = new Set();
+  for (const t of texts || []) for (const x of configSecretList(t)) all.add(x);
+  return secretIndex(all);
+}
+
+/**
+ * Lines around `line` (1-based), masked. Returns [{n, text, hit}]
+ * `known` (a secretIndex(), see allConfigSecrets()) adds secrets found in other files.
+ */
+export function snippet(text, line, context = 2, known = null) {
   if (!text || !line) return null;
   const lines = cached(maskedLines, text, (t) => maskText(t).split('\n'));
   const from = Math.max(1, line - context);
   const to = Math.min(lines.length, line + context);
   const out = [];
-  for (let n = from; n <= to; n++) out.push({ n, text: lines[n - 1].replace(/\t/g, '  '), hit: n === line });
+  for (let n = from; n <= to; n++) out.push({ n, text: maskKnown(lines[n - 1], known).replace(/\t/g, '  '), hit: n === line });
   return out;
 }

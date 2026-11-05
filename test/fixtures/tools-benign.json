@@ -2469,6 +2469,22 @@
           "keyId"
         ]
       }
+    },
+    {
+      "name": "reset_password_link",
+      "description": "Sends a password reset link to the email address of the given account. The link expires after one hour.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Account email address"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      }
     }
   ],
   "editor": [

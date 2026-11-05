@@ -2,10 +2,10 @@
 import os from 'node:os';
 import path from 'node:path';
 import { RULES, SEVERITIES } from './rules.js';
-import { detectInArg, detectSecret, entropy, findSecrets, isPlaceholder, looksLikeSetting, mask } from './secrets.js';
+import { detectInArg, detectSecret, entropy, findSecrets, isPlaceholder, looksLikeSetting, mask, wordyToken } from './secrets.js';
 import { isCredentialParam, maskArgv, maskKnown, maskString, secretIndex } from './mask.js';
 import { baseCommand, effectiveCommand, launchedPackages, parseDockerRun, argsAfterPackage, splitCommandLine } from './packages.js';
-import { configSecretList } from './locate.js';
+import { allConfigSecrets, configSecretList } from './locate.js';
 import { jsoncComments } from './jsonc.js';
 
 const INVISIBLE = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu;
@@ -1594,8 +1594,14 @@ function sentenceAround(text, start, end) {
 // Values a live server was started with (its env, its arguments) that look
 // random enough to be credentials, whatever their key is called: a server
 // that echoes its own key into a tool description must not get it printed.
-const randomValue = (v) => typeof v === 'string' && v.length >= 12 && !/\s/.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v)
-  && entropy(v) >= 3 && !isPlaceholder(v) && !looksLikeSetting(v, '');
+// A key of letters only counts when it is long, switches case often and is
+// not a camelCase word ("TBHhcKbyDtEfquqn", not "MyCompanyWorkspace").
+const caseRuns = (v) => { let n = 0; for (let i = 1; i < v.length; i++) if ((v[i] < 'a') !== (v[i - 1] < 'a')) n++; return n; };
+const randomLetters = (v) => v.length >= 16 && /^[A-Za-z]+$/.test(v) && /[a-z]/.test(v) && /[A-Z]/.test(v)
+  && caseRuns(v) * 4 >= v.length && entropy(v) >= 3.5 && !wordyToken(v);
+const randomValue = (v) => typeof v === 'string' && v.length >= 12 && !/\s/.test(v)
+  && ((/\d/.test(v) && /[A-Za-z]/.test(v) && entropy(v) >= 3) || randomLetters(v))
+  && !isPlaceholder(v) && !looksLikeSetting(v, '');
 
 /**
  * @param {{server: string, tools: {name: string, description?: string, inputSchema?: any}[], secrets?: string[]}[]} toolSets
@@ -1651,9 +1657,11 @@ export function checkTools(toolSets, serverByName = {}, known = null) {
           const sentence = sentenceAround(prose, m.index, m.index + m[0].length);
           const high = urgent || IMPERATIVE.test(sentence);
           if (high) shadows = true;
-          refs.push(finding('MCS017', ctx, show(high
-            ? `Tool "${t.name}" gives instructions about "${other}", a tool from server "${otherServer}".`
-            : `Tool "${t.name}" mentions "${other}", a tool from server "${otherServer}".`),
+          // Only the names are masked: a name such as "reset_password" before fixed text would
+          // otherwise read as a key and hide the first word of the message.
+          refs.push(finding('MCS017', ctx, high
+            ? `Tool "${show(t.name)}" gives instructions about "${show(other)}", a tool from server "${show(otherServer)}".`
+            : `Tool "${show(t.name)}" mentions "${show(other)}", a tool from server "${show(otherServer)}".`,
           { severity: high ? 'high' : 'medium', evidence: show(sentence).slice(0, 400) }));
         }
       }
@@ -1664,7 +1672,7 @@ export function checkTools(toolSets, serverByName = {}, known = null) {
         reasons.push('gives instructions about another server\'s tool');
       }
       if (severity) {
-        const f = finding('MCS016', ctx, show(`Tool "${name}": ${reasons.join(', ')}.`), { severity, evidence: show(evidenceAround(full, hits)), jsonPath: `tools.${name}` });
+        const f = finding('MCS016', ctx, `Tool "${show(name)}": ${reasons.join(', ')}.`, { severity, evidence: show(evidenceAround(full, hits)), jsonPath: `tools.${name}` });
         if (severity !== 'critical') f.fix = 'Read the description and confirm the flagged text is legitimate before trusting this server. If it gives the model instructions that have nothing to do with the tool, remove the server and report it to the maintainer.';
         if (reasons.length === 1 && segments.truncated) f.fix = 'This tool\'s description and schema are larger or more deeply nested than mcpsafe reads, so the rest was not checked. Ordinary tools are far smaller. Review the full tool definition by hand before trusting this server.';
         out.push(f);
@@ -1678,7 +1686,7 @@ export function checkTools(toolSets, serverByName = {}, known = null) {
       const prev = owner.get(t.name);
       if (prev && prev.server !== set.server) {
         const sev = suspicious || prev.suspicious ? 'medium' : 'low';
-        out.push(finding('MCS017', ctx, `Tool "${t.name}" is also provided by "${prev.server}". Clients that list tools without the server name may call the wrong one${sev === 'medium' ? ', and one of the two tools also has suspicious text' : ''}.`, { severity: sev, evidence: t.name }));
+        out.push(finding('MCS017', ctx, `Tool "${show(t.name)}" is also provided by "${show(prev.server)}". Clients that list tools without the server name may call the wrong one${sev === 'medium' ? ', and one of the two tools also has suspicious text' : ''}.`, { severity: sev, evidence: show(t.name) }));
       } else if (!prev) owner.set(t.name, { server: set.server, suspicious });
     }
   }
@@ -1739,9 +1747,7 @@ export function runChecks(configs) {
  * the `known` option of src/mask.js, or null when there is none.
  */
 export function knownSecrets(configs) {
-  const all = new Set();
-  for (const c of configs || []) for (const x of configSecretList(c?.text)) all.add(x);
-  return secretIndex(all);
+  return allConfigSecrets((configs || []).map((c) => c?.text));
 }
 
 export function displayPath(p) {

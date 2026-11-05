@@ -256,6 +256,9 @@ function prepare(server, ctx) {
     const args = (server.args || []).map((a) => expandVars(a, ctx));
     // Credentials written into the command line, as written and as expanded.
     for (const v of [...secretsOfArgv([server.command, ...(server.args || [])].map(String)), ...secretsOfArgv([command, ...args])]) ctx.secrets.add(v);
+    // Every argument, for the tool text check, which masks the ones that look
+    // random even under a flag whose name says nothing (--opt <key>).
+    for (const v of [...(server.args || []).map(String), ...args]) ctx.launch?.add(v);
     const env = { ...process.env };
     for (const [k, v] of Object.entries(server.env || {})) {
       if (v == null || typeof v === 'object') continue;
@@ -696,7 +699,7 @@ function cleanMessage(e, ctx, withNames = true) {
  */
 export async function listTools(server, timeoutMs = 20000) {
   const ctx = {
-    env: process.env, home: os.homedir(), workspace: projectRoot(server), bare: server.client === 'Gemini CLI', unresolved: new Set(), secrets: new Set(), misses: 0,
+    env: process.env, home: os.homedir(), workspace: projectRoot(server), bare: server.client === 'Gemini CLI', unresolved: new Set(), secrets: new Set(), launch: new Set(), misses: 0,
   };
   let session = null;
   let done = false;
@@ -755,7 +758,7 @@ export async function listTools(server, timeoutMs = 20000) {
     if (notes.length) tools.warning = cleanMessage(notes.join('; '), ctx, false);
     // The values the server was started with, so that a tool description
     // that repeats one of them is masked in the reports.
-    Object.defineProperty(tools, 'secrets', { value: [...ctx.secrets], enumerable: false });
+    Object.defineProperty(tools, 'secrets', { value: [...new Set([...ctx.secrets, ...(ctx.launch || [])])], enumerable: false });
     return tools;
   };
   try {

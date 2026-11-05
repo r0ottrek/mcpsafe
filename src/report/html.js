@@ -3,7 +3,7 @@
 // No network requests, so it can be opened offline and shared as one file.
 import { RULES, SEVERITIES } from '../rules.js';
 import { displayPath, poisonSpans } from '../checks.js';
-import { configSecrets, snippet } from '../locate.js';
+import { allConfigSecrets, snippet } from '../locate.js';
 import { maskArgv, maskString } from '../mask.js';
 import { impactByRule } from '../score.js';
 import { launchedPackages, effectiveCommand } from '../packages.js';
@@ -104,6 +104,8 @@ export function renderHtml(result) {
   const clients = [...new Set(configs.map((c) => c.source.client))];
   const impact = impactByRule(findings);
   const textOf = Object.fromEntries(configs.map((c) => [c.source.path, c.text]));
+  // Secrets of every scanned file: one marked in a file can be repeated in another without that context.
+  const known = allConfigSecrets(configs.map((c) => c.text));
   const when = new Date(generatedAt).toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   // ---- summary sentence ----
@@ -142,7 +144,7 @@ export function renderHtml(result) {
         <tr>
           <td>${fs.length ? `<button type="button" class="link strong" data-key="${esc(`server:${s.name}`)}" data-label="${esc(`server ${s.name}`)}">${esc(s.name)}</button>` : `<strong>${esc(s.name)}</strong>`}</td>
           <td>${esc(s.client)}${s.scope === 'project' ? ' (project)' : ''}${s.disabled ? ', disabled' : ''}</td>
-          <td><code>${esc(launcher(s, configSecrets(textOf[s.file])))}</code></td>
+          <td><code>${esc(launcher(s, known))}</code></td>
           <td>${counts || '<span class="muted">None</span>'}</td>
         </tr>`;
   }).join('');
@@ -150,12 +152,12 @@ export function renderHtml(result) {
   // ---- findings ----
   const findingBlocks = findings.map((f, i) => {
     const isTool = !!(f.jsonPath && f.jsonPath.startsWith('tools.'));
-    const snip = isTool ? null : snippet(textOf[f.file], f.line);
+    const snip = isTool ? null : snippet(textOf[f.file], f.line, 2, known);
     let excerpt = '';
     if (snip) {
       excerpt = `<pre class="excerpt" aria-label="Excerpt from ${esc(displayPath(f.file))}">${snip.map((l) => `<span class="${l.hit ? 'ln hit' : 'ln'}"><span class="no">${l.n}</span>${esc(l.text) || ' '}</span>`).join('')}</pre>`;
     } else if (f.evidence) {
-      excerpt = `<p class="label">${isTool ? `Description of tool <code>${esc(f.jsonPath.slice(6))}</code>, as the model sees it` : 'Evidence'}</p><pre class="excerpt wrap">${f.id === 'MCS016' ? markPoison(f.evidence) : esc(maskCommand(f.evidence, configSecrets(textOf[f.file])))}</pre>`;
+      excerpt = `<p class="label">${isTool ? `Description of tool <code>${esc(f.jsonPath.slice(6))}</code>, as the model sees it` : 'Evidence'}</p><pre class="excerpt wrap">${f.id === 'MCS016' ? markPoison(f.evidence) : esc(maskCommand(f.evidence, known))}</pre>`;
     }
     const where = [
       f.server ? ['Server', `${esc(f.server)}${f.client ? ` in ${esc(f.client)}` : ''}`] : f.client ? ['Client', esc(f.client)] : null,

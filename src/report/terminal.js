@@ -5,7 +5,7 @@
 import { RULES, SEVERITIES } from '../rules.js';
 import { displayPath, poisonSpans, spanRank } from '../checks.js';
 import { impactByRule } from '../score.js';
-import { snippet } from '../locate.js';
+import { allConfigSecrets, snippet } from '../locate.js';
 import { safe, dispWidth, splitW, truncW, padW, unreadSummary } from './text.js';
 
 export function makeColors(enabled) {
@@ -65,6 +65,8 @@ function renderDiagnostics(result, { color = false, width = 100 } = {}) {
   const gut = (s) => c.blue(s);
   const { findings, configs } = result;
   const textOf = Object.fromEntries(configs.map((x) => [x.source.path, x.text]));
+  // Secrets of every scanned file, so a value repeated in another file is hidden there too.
+  const known = allConfigSecrets(configs.map((x) => x.text));
   const L = [];
   const push = (s = '') => L.push(s);
   const gutterW = Math.max(1, ...findings.map((f) => String(f.line || '').length));
@@ -77,7 +79,7 @@ function renderDiagnostics(result, { color = false, width = 100 } = {}) {
     const titleLines = wrap(f.title, '', W - tag.length - 2);
     titleLines.forEach((t, i) => push(i ? `${' '.repeat(tag.length + 2)}${c.bold(t)}` : `${sev[f.severity](tag)}${c.bold(`: ${t}`)}`));
     // Masked with the whole file as context, so a value after a --flag line is hidden too.
-    const src = f.line ? snippet(textOf[f.file], f.line, 0)?.[0]?.text ?? null : null;
+    const src = f.line ? snippet(textOf[f.file], f.line, 0, known)?.[0]?.text ?? null : null;
     const num = f.line ? String(f.line).padStart(gutterW) : '';
     const pad = ' '.repeat(gutterW);
     const message = safe(f.message);
