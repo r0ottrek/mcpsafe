@@ -76,7 +76,8 @@ test('scan() exposes errors and toJson() reports completeness', async () => {
 });
 
 test('bare --html never takes a config file or folder as its output', () => {
-  const cwd = tmpdir();
+  // Real path: on macOS the temp folder is reached through the /var -> /private/var link.
+  const cwd = fs.realpathSync(tmpdir());
   const proj = path.join(cwd, 'proj');
   const cfg = writeJson(path.join(proj, '.mcp.json'), { mcpServers: { gh: { command: 'npx', args: ['-y', 'mcp-shell'], env: { GITHUB_TOKEN: FAKE.github } } } });
   const before = fs.readFileSync(cfg);

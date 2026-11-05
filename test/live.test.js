@@ -137,10 +137,11 @@ test('env, args, header and url references are expanded from the environment', a
 test('project servers start in the project folder, from any current folder', () => {
   const dir = tmpdir();
   fs.mkdirSync(path.join(dir, 'server'));
-  fs.copyFileSync(fixture, path.join(dir, 'server', 'index.js'));
+  // .mjs: outside the repository there is no package.json saying the file is a module.
+  fs.copyFileSync(fixture, path.join(dir, 'server', 'index.mjs'));
   fs.writeFileSync(path.join(dir, 'marker.txt'), 'x');
-  writeJson(path.join(dir, '.mcp.json'), { mcpServers: { local: { command: process.execPath, args: ['server/index.js', 'cwd'] } } });
-  writeJson(path.join(dir, '.cursor/mcp.json'), { mcpServers: { cur: { command: process.execPath, args: ['server/index.js', 'cwd'] } } });
+  writeJson(path.join(dir, '.mcp.json'), { mcpServers: { local: { command: process.execPath, args: ['server/index.mjs', 'cwd'] } } });
+  writeJson(path.join(dir, '.cursor/mcp.json'), { mcpServers: { cur: { command: process.execPath, args: ['server/index.mjs', 'cwd'] } } });
   const elsewhere = tmpdir();
   const out = JSON.parse(run(['--no-home', dir, '--connect', '--json'], { cwd: elsewhere }).stdout);
   assert.deepEqual(out.liveErrors, []);
